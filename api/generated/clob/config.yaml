@@ -1,0 +1,6 @@
+package: clob
+output: api/generated/clob/server.gen.go
+generate:
+  chi-server: true
+  models: true
+  embedded-spec: true

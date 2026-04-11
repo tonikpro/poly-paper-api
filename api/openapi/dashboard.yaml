@@ -1,0 +1,311 @@
+openapi: "3.0.3"
+info:
+  title: Poly Paper Trading - Dashboard API
+  version: "1.0.0"
+  description: Dashboard API for managing accounts, wallets, and viewing trading data
+
+paths:
+  /auth/register:
+    post:
+      operationId: register
+      tags: [auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: User registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login and get JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/wallet:
+    get:
+      operationId: getWallet
+      tags: [wallet]
+      summary: Get user wallet balance
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Wallet info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletResponse"
+
+  /api/wallet/deposit:
+    post:
+      operationId: deposit
+      tags: [wallet]
+      summary: Deposit virtual funds
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FundsRequest"
+      responses:
+        "200":
+          description: Deposit successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletResponse"
+
+  /api/wallet/withdraw:
+    post:
+      operationId: withdraw
+      tags: [wallet]
+      summary: Withdraw virtual funds
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FundsRequest"
+      responses:
+        "200":
+          description: Withdrawal successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WalletResponse"
+
+  /api/orders:
+    get:
+      operationId: getDashboardOrders
+      tags: [dashboard]
+      summary: Get user orders for dashboard view
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Orders list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardOrdersResponse"
+
+  /api/positions:
+    get:
+      operationId: getDashboardPositions
+      tags: [dashboard]
+      summary: Get user positions for dashboard view
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Positions list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardPositionsResponse"
+
+  /api/trades:
+    get:
+      operationId: getDashboardTrades
+      tags: [dashboard]
+      summary: Get user trades for dashboard view
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Trades list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardTradesResponse"
+
+  /api/eth-address:
+    get:
+      operationId: getEthAddress
+      tags: [dashboard]
+      summary: Get user Ethereum address and private key for bot configuration
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Ethereum credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EthAddressResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/UserInfo"
+
+    UserInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        eth_address:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+
+    WalletResponse:
+      type: object
+      properties:
+        balance:
+          type: string
+        allowance:
+          type: string
+
+    FundsRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount:
+          type: string
+
+    DashboardOrdersResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer
+
+    DashboardPositionsResponse:
+      type: object
+      properties:
+        positions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    DashboardTradesResponse:
+      type: object
+      properties:
+        trades:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer
+
+    EthAddressResponse:
+      type: object
+      properties:
+        eth_address:
+          type: string
+        private_key:
+          type: string
