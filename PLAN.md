@@ -786,9 +786,9 @@ Tech: React + TypeScript + Vite + React Router + Tailwind CSS
 - **Wallet**: current balance, deposit/withdraw virtual funds
 - **API Keys**: generate/revoke API keys, show key/secret/passphrase once on creation
 
-### Step 5.3 — Serve from Go
+### Step 5.3 — Serving
 
-In production, embed the built React app using `go:embed` and serve from the Go binary. In dev, proxy to Vite dev server.
+The dashboard is served separately from the Go API server. In dev, Vite proxies `/auth` and `/api` requests to the Go backend. In production, serve the `dashboard/dist` output with any static file server (nginx, caddy, etc.) and proxy API routes to the Go backend.
 
 ---
 

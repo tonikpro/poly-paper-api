@@ -181,6 +181,51 @@ func (h *DashboardHandler) GetDashboardTrades(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"trades": trades, "total": total})
 }
 
+// --- Dashboard API key management (JWT-protected) ---
+
+func (h *DashboardHandler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	keys, err := h.svc.GetAPIKeys(r.Context(), userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list api keys"})
+		return
+	}
+	if keys == nil {
+		keys = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apiKeys": keys})
+}
+
+func (h *DashboardHandler) CreateAPIKeyDashboard(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	key, err := h.svc.CreateAPIKey(r.Context(), userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create api key"})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"apiKey":     key.APIKey,
+		"secret":     key.APISecret,
+		"passphrase": key.Passphrase,
+	})
+}
+
+func (h *DashboardHandler) DeleteAPIKeyDashboard(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	var req struct {
+		APIKey string `json:"apiKey"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.APIKey == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "apiKey required"})
+		return
+	}
+	if err := h.svc.DeleteAPIKeyForUser(r.Context(), userID, req.APIKey); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete api key"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

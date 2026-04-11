@@ -101,6 +101,14 @@ func main() {
 		},
 	})
 
+	// Dashboard API key management (JWT-protected)
+	r.Route("/api/api-keys", func(r chi.Router) {
+		r.Use(auth.JWTMiddleware(authSvc))
+		r.Get("/", dashboardHandler.ListAPIKeys)
+		r.Post("/", dashboardHandler.CreateAPIKeyDashboard)
+		r.Delete("/", dashboardHandler.DeleteAPIKeyDashboard)
+	})
+
 	// CLOB routes under /clob prefix — auth determined by endpoint
 	clobRouter := chi.NewRouter()
 	clobapi.HandlerWithOptions(clobServer, clobapi.ChiServerOptions{

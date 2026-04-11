@@ -164,6 +164,11 @@ func (r *Repository) DeleteAPIKey(ctx context.Context, apiKey string) error {
 	return err
 }
 
+func (r *Repository) DeleteAPIKeyForUser(ctx context.Context, userID, apiKey string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM api_keys WHERE user_id = $1 AND api_key = $2`, userID, apiKey)
+	return err
+}
+
 // Nonce tracking for L1 replay protection
 
 func (r *Repository) IsNonceUsed(ctx context.Context, ethAddress string, nonce int64) (bool, error) {

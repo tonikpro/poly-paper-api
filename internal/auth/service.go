@@ -419,6 +419,10 @@ func (s *Service) DeleteAPIKey(ctx context.Context, apiKey string) error {
 	return s.repo.DeleteAPIKey(ctx, apiKey)
 }
 
+func (s *Service) DeleteAPIKeyForUser(ctx context.Context, userID, apiKey string) error {
+	return s.repo.DeleteAPIKeyForUser(ctx, userID, apiKey)
+}
+
 // --- Encryption helpers ---
 
 func (s *Service) encryptPrivateKey(data []byte) ([]byte, error) {

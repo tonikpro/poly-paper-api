@@ -49,4 +49,9 @@ export const getTrades = (params?: { limit?: number; offset?: number }) =>
 // Eth address
 export const getEthAddress = () => api.get('/api/eth-address');
 
+// API Keys
+export const getApiKeys = () => api.get('/api/api-keys');
+export const createApiKey = () => api.post('/api/api-keys');
+export const deleteApiKey = (apiKey: string) => api.delete('/api/api-keys', { data: { apiKey } });
+
 export default api;
