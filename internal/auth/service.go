@@ -189,8 +189,8 @@ func (s *Service) VerifyL1Auth(ctx context.Context, address, signature, timestam
 		nonce = 0
 	}
 
-	// Replay protection
-	used, err := s.repo.IsNonceUsed(ctx, address, nonce)
+	// Replay protection — only reject exact (address, nonce, timestamp) within the window
+	used, err := s.repo.IsNonceUsed(ctx, address, nonce, ts)
 	if err != nil {
 		return nil, fmt.Errorf("check nonce: %w", err)
 	}

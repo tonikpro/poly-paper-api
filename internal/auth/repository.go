@@ -171,18 +171,22 @@ func (r *Repository) DeleteAPIKeyForUser(ctx context.Context, userID, apiKey str
 
 // Nonce tracking for L1 replay protection
 
-func (r *Repository) IsNonceUsed(ctx context.Context, ethAddress string, nonce int64) (bool, error) {
+func (r *Repository) IsNonceUsed(ctx context.Context, ethAddress string, nonce, timestamp int64) (bool, error) {
 	var exists bool
 	err := r.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM used_nonces WHERE LOWER(eth_address) = LOWER($1) AND nonce = $2)`,
-		ethAddress, nonce,
+		`SELECT EXISTS(SELECT 1 FROM used_nonces
+		 WHERE LOWER(eth_address) = LOWER($1) AND nonce = $2 AND timestamp = $3
+		 AND used_at > now() - interval '600 seconds')`,
+		ethAddress, nonce, timestamp,
 	).Scan(&exists)
 	return exists, err
 }
 
 func (r *Repository) RecordNonce(ctx context.Context, ethAddress string, nonce, timestamp int64) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO used_nonces (eth_address, nonce, timestamp) VALUES ($1, $2, $3)`,
+		`INSERT INTO used_nonces (eth_address, nonce, timestamp)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (eth_address, nonce) DO UPDATE SET timestamp = EXCLUDED.timestamp, used_at = now()`,
 		ethAddress, nonce, timestamp,
 	)
 	return err
