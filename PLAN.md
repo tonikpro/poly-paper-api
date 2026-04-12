@@ -10,6 +10,41 @@ Build a paper trading service that replicates Polymarket's CLOB (Central Limit O
 
 **Tech stack**: Go + Chi + oapi-codegen, PostgreSQL + pgx, React (monorepo under `/dashboard`)
 
+## Current Status (April 12, 2026)
+
+The repo now implements the core paper-trading loop and a substantial Polymarket CLOB-compatible surface, but it does not yet fully match the latest official REST + TypeScript SDK surface.
+
+Implemented locally:
+- Dashboard auth and wallet flows
+- L1/L2 CLOB auth for core trading flows
+- Order placement, order queries, trade queries, balance allowance
+- Cancel single, batch, all, and by market
+- Compatibility stubs for notifications, scoring, heartbeat, and fee-rate
+
+Proxied to live Polymarket CLOB:
+- `GET /time`
+- `GET /tick-size`
+- `GET /neg-risk`
+- `GET /book`, `POST /books`
+- `GET /midpoint`, `POST /midpoints`
+- `GET /price`, `POST /prices`
+- `GET /spread`, `POST /spreads`
+- `GET /last-trade-price`, `POST /last-trades-prices`
+- `GET /sampling-simplified-markets`
+- `GET /sampling-markets`
+- `GET /simplified-markets`
+- `GET /markets`
+- `GET /markets/{marketId}`
+- `GET /live-activity/events/{eventId}`
+
+Known parity gaps against the latest official docs and `Polymarket/clob-client`:
+- Missing official endpoints: `GET /prices-history`, readonly API key endpoints, builder API key endpoints, closed-only / ban-status auth helpers
+- Notifications and scoring endpoints are stubs and should not be treated as full parity
+- `/data/trades` is kept for SDK compatibility; official docs also expose newer `/trades`-style ledger wording in some places
+
+Primary local reference for future CLOB work:
+- `docs/polymarket-clob-api.md`
+
 ---
 
 ## Phase 1: Project Structure & Database Foundation
@@ -83,7 +118,7 @@ Write two OpenAPI 3.0 specs:
 - `/auth/register`, `/auth/login` (public)
 - `/api/wallet`, `/api/orders`, `/api/positions`, `/api/trades`, `/api/eth-address` (JWT-protected)
 
-**`api/openapi/clob.yaml`** — CLOB API (matches Polymarket's schema exactly):
+**`api/openapi/clob.yaml`** — CLOB API (targets Polymarket compatibility for the implemented subset):
 
 All paths are relative to the CLOB base URL. Bots set `host = "http://localhost:8080/clob"` and the SDK appends paths directly. The Chi router mounts the CLOB handler group under `/clob`.
 
@@ -138,7 +173,7 @@ Market data (public, no auth — proxied to real Polymarket CLOB):
 
 All public/market-data endpoints proxy to `https://clob.polymarket.com` — forward the request, return the response as-is. This lets bots use a single CLOB client with one base URL.
 
-Request/response schemas in `clob.yaml` must match Polymarket's JSON format so bots need zero changes.
+Request/response schemas in `clob.yaml` should stay as close as possible to Polymarket's JSON format, but the latest official API surface is larger than the currently implemented subset. Keep `docs/polymarket-clob-api.md` in sync whenever parity changes.
 
 ### Step 1.3 — Code generation
 
@@ -340,7 +375,7 @@ JWT middleware: checks `Authorization: Bearer <token>` header, extracts user ID 
 
 ### Step 2.2 — CLOB auth (Polymarket-compatible) — `/clob/*`
 
-Full Polymarket-compatible auth with two levels, so bots need **zero code changes** — just swap the base URL.
+Core Polymarket-compatible auth with two levels for the main bot workflow. The latest official auth surface also includes readonly, builder, and ban-status endpoints that are not yet implemented here.
 
 **L1 auth — EIP-712 wallet signatures (for API key creation):**
 
@@ -408,13 +443,13 @@ Server verifies:
 - `owner` field must equal the authenticated `POLY_ADDRESS`
 - Reject with 401 if mismatched — prevents submitting orders on behalf of other users
 
-**API key endpoints (match Polymarket exactly):**
+**API key endpoints (current implementation):**
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/clob/auth/api-key` | L1 | Create new API key → returns `{apiKey, secret, passphrase}` |
 | GET | `/clob/auth/derive-api-key` | L1 | Derive (retrieve) existing API key |
-| GET | `/clob/auth/api-keys` | L2 | List all API keys for the user |
+| GET | `/clob/auth/api-keys` | L2 | List API keys for the user as structured key objects |
 | DELETE | `/clob/auth/api-key` | L2 | Delete an API key |
 
 Response format matches Polymarket's `ApiCreds`:
@@ -426,17 +461,17 @@ Response format matches Polymarket's `ApiCreds`:
 }
 ```
 
-**Bot workflow (identical to real Polymarket):**
+**Bot workflow (compatible with the main real-Polymarket flow):**
 1. User registers on dashboard → gets Ethereum address + private key
 2. Bot configures private key + base URL `localhost:8080/clob`
 3. Bot calls `create_or_derive_api_creds()` → L1 auth → gets API key/secret/passphrase
-4. Bot trades using L2 headers — zero code changes from real Polymarket
+4. Bot trades using L2 headers — current goal is SDK compatibility for core trading, not full parity with every newer auth surface
 
 ---
 
 ## Phase 3: Core Trading API (CLOB-Compatible)
 
-All CLOB endpoints live under `/clob/*` with L2 auth middleware. Mirrors Polymarket's API so bots work without code changes.
+All CLOB endpoints live under `/clob/*` with L2 auth middleware. The core paths mirror Polymarket closely enough for the main bot flow, but some newer endpoints and some response envelopes still differ from the latest official API.
 
 ### Step 3.1 — Order endpoints
 
@@ -449,10 +484,16 @@ All paths below are relative to the `/clob` mount point (e.g. `/clob/order`). Th
 | DELETE | `/order` | `{"orderID": "uuid"}` | Cancel single order (ID in body, NOT path) |
 | DELETE | `/orders` | `["id1", "id2"]` | Cancel batch orders (array in body) |
 | DELETE | `/cancel-all` | none | Cancel all user's orders |
-| DELETE | `/cancel-market-orders` | `{"market": "..."}` | Cancel all orders for a market |
+| DELETE | `/cancel-market-orders` | `{"market": "...", "asset_id": "..."}` | Supports market-only, asset-only, both, or no filters |
 | GET | `/data/order/{id}` | — | Get order by ID |
 | GET | `/data/orders` | — | Get user's orders (cursor-paginated) |
 | GET | `/data/trades` | — | Get user's trades (cursor-paginated) |
+
+Additional official CLOB surface not yet implemented locally:
+- `GET /prices-history`
+- readonly API key endpoints
+- builder API key endpoints
+- closed-only / ban-status helpers
 
 ### Step 3.2 — Wire-compatible order format
 
@@ -519,7 +560,13 @@ All paths below are relative to the `/clob` mount point (e.g. `/clob/order`). Th
 
 Server validates the signed order fields but does NOT verify the EIP-712 order signature on-chain (paper trading — no real settlement). Store all fields to return them in GET responses.
 
-### Step 3.3 — Order matching against real prices
+### Step 3.3 — Parity follow-up backlog
+
+To move from "core SDK-compatible" to "latest API-compatible", prioritize:
+- Add missing official endpoints: `GET /prices-history`, readonly API keys, builder API keys, closed-only / ban-status
+- Replace notification/scoring stubs with real behavior or explicitly document them as non-parity endpoints in the OpenAPI spec
+
+### Step 3.4 — Order matching against real prices
 
 `matcher.go` — when an order is placed:
 
@@ -548,7 +595,7 @@ Key guarantees:
 - Balance check in UPDATE prevents negative balances
 - Single transaction = all-or-nothing
 
-### Step 3.4 — Position & trade endpoints
+### Step 3.5 — Position & trade endpoints
 
 **GET `/clob/data/trades` response** (cursor-paginated, matches Polymarket):
 ```json
@@ -634,7 +681,7 @@ Public endpoints (no auth, proxied to `https://clob.polymarket.com`):
 
 Proxy implementation: a single reverse-proxy handler forwards the request to `https://clob.polymarket.com` with the same path, query string, and headers (excluding POLY_* auth headers). Returns the upstream response body and status code as-is. Caching optional (short TTL for book/price, longer for markets).
 
-### Step 3.5 — Order lifecycle background worker
+### Step 3.6 — Order lifecycle background worker
 
 A goroutine that periodically (every 5-10s):
 1. `SELECT ... FOR UPDATE SKIP LOCKED` all LIVE limit orders (avoids blocking request-path fills)

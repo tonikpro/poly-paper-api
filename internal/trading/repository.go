@@ -21,6 +21,12 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // --- Orders ---
 
 func (r *Repository) CreateOrder(ctx context.Context, o *models.Order) error {
+	// Pass NULL instead of empty string for outcome to satisfy CHECK constraint
+	var outcome interface{} = o.Outcome
+	if o.Outcome == "" {
+		outcome = nil
+	}
+
 	err := r.pool.QueryRow(ctx,
 		`INSERT INTO orders (user_id, salt, maker, signer, taker, token_id,
 			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
@@ -31,7 +37,7 @@ func (r *Repository) CreateOrder(ctx context.Context, o *models.Order) error {
 		o.UserID, o.Salt, o.Maker, o.Signer, o.Taker, o.TokenID,
 		o.MakerAmount, o.TakerAmount, o.Side, o.Expiration, o.Nonce, o.FeeRateBps,
 		o.SignatureType, o.Signature, o.Price, o.OriginalSize, o.SizeMatched, o.Status,
-		o.OrderType, o.PostOnly, o.Owner, o.Market, o.AssetID, o.Outcome, "[]",
+		o.OrderType, o.PostOnly, o.Owner, o.Market, o.AssetID, outcome, "[]",
 	).Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("create order: %w", err)
@@ -136,37 +142,61 @@ func (r *Repository) GetAllOrdersByUserID(ctx context.Context, userID string) ([
 	return r.scanOrders(rows)
 }
 
-func (r *Repository) CancelOrder(ctx context.Context, orderID, userID string) error {
-	ct, err := r.pool.Exec(ctx,
-		`UPDATE orders SET status = 'CANCELED', updated_at = now()
-		 WHERE id = $1 AND user_id = $2 AND status = 'LIVE'`, orderID, userID)
+func (r *Repository) CancelOrder(ctx context.Context, orderID, userID string) (bool, error) {
+	var canceledID string
+	err := r.pool.QueryRow(ctx,
+		`UPDATE orders
+		 SET status = 'CANCELED', updated_at = now()
+		 WHERE id = $1 AND user_id = $2 AND status = 'LIVE'
+		 RETURNING id`,
+		orderID, userID,
+	).Scan(&canceledID)
 	if err != nil {
-		return fmt.Errorf("cancel order: %w", err)
+		if err == pgx.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("cancel order: %w", err)
 	}
-	if ct.RowsAffected() == 0 {
-		return fmt.Errorf("order not found or already canceled")
-	}
-	return nil
+	return true, nil
 }
 
-func (r *Repository) CancelAllOrders(ctx context.Context, userID string) (int64, error) {
-	ct, err := r.pool.Exec(ctx,
-		`UPDATE orders SET status = 'CANCELED', updated_at = now()
-		 WHERE user_id = $1 AND status = 'LIVE'`, userID)
-	if err != nil {
-		return 0, fmt.Errorf("cancel all orders: %w", err)
-	}
-	return ct.RowsAffected(), nil
-}
+func (r *Repository) CancelOrdersByFilter(ctx context.Context, userID string, market, assetID *string) ([]string, error) {
+	query := `UPDATE orders
+		SET status = 'CANCELED', updated_at = now()
+		WHERE user_id = $1 AND status = 'LIVE'`
+	args := []any{userID}
+	argIdx := 2
 
-func (r *Repository) CancelMarketOrders(ctx context.Context, userID, market string) (int64, error) {
-	ct, err := r.pool.Exec(ctx,
-		`UPDATE orders SET status = 'CANCELED', updated_at = now()
-		 WHERE user_id = $1 AND market = $2 AND status = 'LIVE'`, userID, market)
-	if err != nil {
-		return 0, fmt.Errorf("cancel market orders: %w", err)
+	if market != nil && *market != "" {
+		query += fmt.Sprintf(" AND market = $%d", argIdx)
+		args = append(args, *market)
+		argIdx++
 	}
-	return ct.RowsAffected(), nil
+	if assetID != nil && *assetID != "" {
+		query += fmt.Sprintf(" AND asset_id = $%d", argIdx)
+		args = append(args, *assetID)
+		argIdx++
+	}
+	query += " RETURNING id"
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("cancel filtered orders: %w", err)
+	}
+	defer rows.Close()
+
+	var canceled []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan canceled order id: %w", err)
+		}
+		canceled = append(canceled, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate canceled order ids: %w", err)
+	}
+	return canceled, nil
 }
 
 func (r *Repository) UpdateOrderFill(ctx context.Context, tx pgx.Tx, orderID string, sizeMatched string, status string, tradeID string) error {
@@ -381,6 +411,36 @@ func (r *Repository) scanOrders(rows pgx.Rows) ([]*models.Order, error) {
 		orders = append(orders, o)
 	}
 	return orders, nil
+}
+
+// UpsertMarketAndTokens inserts or updates a market and its outcome tokens.
+func (r *Repository) UpsertMarketAndTokens(ctx context.Context, market *models.Market, tokens []models.OutcomeToken) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO markets (id, condition_id, question, slug, active, closed, neg_risk, tick_size, min_order_size, synced_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+		 ON CONFLICT (id) DO UPDATE SET
+			active = EXCLUDED.active,
+			closed = EXCLUDED.closed,
+			synced_at = now()`,
+		market.ID, market.ConditionID, market.Question, market.Slug, market.Active, market.Closed, market.NegRisk,
+		market.TickSize, market.MinOrderSize)
+	if err != nil {
+		return fmt.Errorf("upsert market: %w", err)
+	}
+
+	for _, t := range tokens {
+		_, err := r.pool.Exec(ctx,
+			`INSERT INTO outcome_tokens (token_id, market_id, outcome, winner)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (token_id) DO UPDATE SET
+				winner = EXCLUDED.winner`,
+			t.TokenID, t.MarketID, t.Outcome, t.Winner)
+		if err != nil {
+			return fmt.Errorf("upsert outcome token: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // GetOutcomeToken looks up a token to find its market and outcome

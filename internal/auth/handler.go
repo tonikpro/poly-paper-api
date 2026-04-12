@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	dashboard "github.com/tonikpro/poly-paper-api/api/generated/dashboard"
+	"github.com/tonikpro/poly-paper-api/internal/models"
 )
 
 // DashboardHandler implements the dashboard ServerInterface for auth-related endpoints
@@ -191,7 +192,7 @@ func (h *DashboardHandler) ListAPIKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if keys == nil {
-		keys = []string{}
+		keys = []models.APIKey{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"apiKeys": keys})
 }
@@ -204,7 +205,7 @@ func (h *DashboardHandler) CreateAPIKeyDashboard(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{
-		"apiKey":     key.APIKey,
+		"apiKey":     key.ID,
 		"secret":     key.APISecret,
 		"passphrase": key.Passphrase,
 	})

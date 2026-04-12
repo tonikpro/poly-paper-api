@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/tonikpro/poly-paper-api/internal/config"
@@ -370,6 +371,16 @@ func (s *Service) verifyHMAC(secret, timestamp, method, path, body, expectedSig 
 	computedSigStd := base64.StdEncoding.EncodeToString(computed)
 
 	if computedSig != expectedSig && computedSigStd != expectedSig {
+		slog.Error("HMAC mismatch debug",
+			"method", method,
+			"path", path,
+			"body", body,
+			"timestamp", timestamp,
+			"message", message,
+			"expected_sig", expectedSig,
+			"computed_url_safe", computedSig,
+			"computed_std", computedSigStd,
+		)
 		return fmt.Errorf("signature mismatch")
 	}
 
@@ -379,11 +390,7 @@ func (s *Service) verifyHMAC(secret, timestamp, method, path, body, expectedSig 
 // --- API Key Management ---
 
 func (s *Service) CreateAPIKey(ctx context.Context, userID string) (*models.APIKey, error) {
-	apiKeyBytes := make([]byte, 32)
-	if _, err := rand.Read(apiKeyBytes); err != nil {
-		return nil, err
-	}
-	apiKey := hex.EncodeToString(apiKeyBytes)
+	id := uuid.Must(uuid.NewV7()).String()
 
 	secretBytes := make([]byte, 32)
 	if _, err := rand.Read(secretBytes); err != nil {
@@ -397,7 +404,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID string) (*models.APIK
 	}
 	passphrase := hex.EncodeToString(passphraseBytes)
 
-	return s.repo.CreateAPIKey(ctx, userID, apiKey, apiSecret, passphrase)
+	return s.repo.CreateAPIKey(ctx, userID, id, apiSecret, passphrase)
 }
 
 func (s *Service) DeriveAPIKey(ctx context.Context, userID string) (*models.APIKey, error) {
@@ -411,7 +418,7 @@ func (s *Service) DeriveAPIKey(ctx context.Context, userID string) (*models.APIK
 	return key, nil
 }
 
-func (s *Service) GetAPIKeys(ctx context.Context, userID string) ([]string, error) {
+func (s *Service) GetAPIKeys(ctx context.Context, userID string) ([]models.APIKey, error) {
 	return s.repo.GetAPIKeysByUserID(ctx, userID)
 }
 

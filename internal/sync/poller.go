@@ -25,7 +25,8 @@ type GammaMarket struct {
 	TickSize      string `json:"minimum_tick_size"`
 	MinOrderSize  string `json:"minimum_order_size"`
 	Outcome       string `json:"outcome"` // "Yes" / "No" for resolved markets
-	ClobTokenIds  string `json:"clob_token_ids"`
+	ClobTokenIds  string `json:"clobTokenIds"`
+	Outcomes      string `json:"outcomes"`
 	Tokens        []struct {
 		TokenID string `json:"token_id"`
 		Outcome string `json:"outcome"`
@@ -176,16 +177,44 @@ func (p *Poller) upsertMarket(ctx context.Context, m *GammaMarket) error {
 		return fmt.Errorf("upsert market: %w", err)
 	}
 
-	// Upsert outcome tokens
-	for _, token := range m.Tokens {
-		_, err := p.pool.Exec(ctx,
-			`INSERT INTO outcome_tokens (token_id, market_id, outcome, winner)
-			 VALUES ($1, $2, $3, $4)
-			 ON CONFLICT (token_id) DO UPDATE SET
-				winner = EXCLUDED.winner`,
-			token.TokenID, marketID, token.Outcome, boolToNullable(token.Winner, m.Closed))
-		if err != nil {
-			slog.Warn("poller: failed to upsert outcome token", "token_id", token.TokenID, "error", err)
+	// Upsert outcome tokens — use tokens array if present,
+	// otherwise parse clobTokenIds + outcomes JSON strings.
+	if len(m.Tokens) > 0 {
+		for _, token := range m.Tokens {
+			_, err := p.pool.Exec(ctx,
+				`INSERT INTO outcome_tokens (token_id, market_id, outcome, winner)
+				 VALUES ($1, $2, $3, $4)
+				 ON CONFLICT (token_id) DO UPDATE SET
+					winner = EXCLUDED.winner`,
+				token.TokenID, marketID, token.Outcome, boolToNullable(token.Winner, m.Closed))
+			if err != nil {
+				slog.Warn("poller: failed to upsert outcome token", "token_id", token.TokenID, "error", err)
+			}
+		}
+	} else if m.ClobTokenIds != "" {
+		var clobIDs []string
+		var outcomes []string
+		if err := json.Unmarshal([]byte(m.ClobTokenIds), &clobIDs); err != nil {
+			slog.Warn("poller: failed to parse clobTokenIds", "error", err)
+		} else {
+			if m.Outcomes != "" {
+				_ = json.Unmarshal([]byte(m.Outcomes), &outcomes)
+			}
+			for i, id := range clobIDs {
+				outcome := ""
+				if i < len(outcomes) {
+					outcome = outcomes[i]
+				}
+				_, err := p.pool.Exec(ctx,
+					`INSERT INTO outcome_tokens (token_id, market_id, outcome)
+					 VALUES ($1, $2, $3)
+					 ON CONFLICT (token_id) DO UPDATE SET
+						market_id = EXCLUDED.market_id`,
+					id, marketID, outcome)
+				if err != nil {
+					slog.Warn("poller: failed to upsert outcome token from clobTokenIds", "token_id", id, "error", err)
+				}
+			}
 		}
 	}
 

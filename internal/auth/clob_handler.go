@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	clob "github.com/tonikpro/poly-paper-api/api/generated/clob"
+	"github.com/tonikpro/poly-paper-api/internal/models"
 )
 
 // CLOBAuthHandler handles CLOB auth endpoints (api key management)
@@ -27,7 +28,7 @@ func (h *CLOBAuthHandler) CreateApiKey(w http.ResponseWriter, r *http.Request, p
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"apiKey":     key.APIKey,
+		"apiKey":     key.ID,
 		"secret":     key.APISecret,
 		"passphrase": key.Passphrase,
 	})
@@ -44,7 +45,7 @@ func (h *CLOBAuthHandler) DeriveApiKey(w http.ResponseWriter, r *http.Request, p
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"apiKey":     key.APIKey,
+		"apiKey":     key.ID,
 		"secret":     key.APISecret,
 		"passphrase": key.Passphrase,
 	})
@@ -60,10 +61,26 @@ func (h *CLOBAuthHandler) GetApiKeys(w http.ResponseWriter, r *http.Request, par
 		return
 	}
 	if keys == nil {
-		keys = []string{}
+		keys = []models.APIKey{}
 	}
 
-	writeJSON(w, http.StatusOK, keys)
+	resp := struct {
+		ApiKeys []clob.ApiCreds `json:"apiKeys"`
+	}{
+		ApiKeys: make([]clob.ApiCreds, 0, len(keys)),
+	}
+	for _, key := range keys {
+		apiKey := key.ID
+		secret := key.APISecret
+		passphrase := key.Passphrase
+		resp.ApiKeys = append(resp.ApiKeys, clob.ApiCreds{
+			ApiKey:     &apiKey,
+			Secret:     &secret,
+			Passphrase: &passphrase,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // DeleteApiKey handles DELETE /auth/api-key (L2 auth — middleware already verified)

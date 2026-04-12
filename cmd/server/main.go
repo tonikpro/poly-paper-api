@@ -54,7 +54,7 @@ func main() {
 
 	tradingRepo := trading.NewRepository(pool)
 	matcher := trading.NewMatcher(cfg.PolymarketCLOBURL)
-	tradingSvc := trading.NewService(tradingRepo, matcher)
+	tradingSvc := trading.NewService(tradingRepo, matcher, cfg.PolymarketGammaURL)
 
 	// Handlers
 	dashboardQueries := auth.NewDashboardQueries(pool)

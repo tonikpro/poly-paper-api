@@ -2,22 +2,32 @@ package trading
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tonikpro/poly-paper-api/internal/models"
 )
 
 type Service struct {
-	repo    *Repository
-	matcher *Matcher
+	repo       *Repository
+	matcher    *Matcher
+	gammaURL   string
+	httpClient *http.Client
 }
 
-func NewService(repo *Repository, matcher *Matcher) *Service {
-	return &Service{repo: repo, matcher: matcher}
+func NewService(repo *Repository, matcher *Matcher, gammaURL string) *Service {
+	return &Service{
+		repo:       repo,
+		matcher:    matcher,
+		gammaURL:   gammaURL,
+		httpClient: &http.Client{Timeout: 15 * time.Second},
+	}
 }
 
 // PlaceOrder validates and creates an order, attempts immediate matching.
@@ -36,15 +46,20 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		return nil, fmt.Errorf("lookup token: %w", err)
 	}
 
-	var marketID, outcome string
-	if token != nil {
-		marketID = token.MarketID
-		outcome = token.Outcome
+	// If token not in DB, fetch from Polymarket Gamma API and store it
+	if token == nil {
+		token, err = s.fetchAndStoreToken(ctx, signed.TokenID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve token: %w", err)
+		}
 	}
+
+	marketID := token.MarketID
+	outcome := token.Outcome
 
 	order := &models.Order{
 		UserID:        userID,
-		Salt:          signed.Salt,
+		Salt:          strconv.FormatInt(signed.Salt, 10),
 		Maker:         signed.Maker,
 		Signer:        signed.Signer,
 		Taker:         signed.Taker,
@@ -90,7 +105,7 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 
 	// FOK: must fill entirely or cancel
 	if req.OrderType == "FOK" && status != "MATCHED" {
-		_ = s.repo.CancelOrder(ctx, order.ID, userID)
+		_, _ = s.repo.CancelOrder(ctx, order.ID, userID)
 		return &models.OrderResponse{
 			Success:  false,
 			ErrorMsg: "FOK order could not be fully filled",
@@ -101,7 +116,7 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 
 	// FAK: fill what we can, cancel the rest
 	if req.OrderType == "FAK" && matchResult != nil && matchResult.Remaining > 0.000001 {
-		_ = s.repo.CancelOrder(ctx, order.ID, userID)
+		_, _ = s.repo.CancelOrder(ctx, order.ID, userID)
 		status = "CANCELED"
 	}
 
@@ -256,28 +271,68 @@ func (s *Service) executeFill(ctx context.Context, order *models.Order, result *
 }
 
 // CancelOrder cancels a single order.
-func (s *Service) CancelOrder(ctx context.Context, userID, orderID string) error {
-	return s.repo.CancelOrder(ctx, orderID, userID)
+func (s *Service) CancelOrder(ctx context.Context, userID, orderID string) (*models.CancelOrdersResponse, error) {
+	canceled, err := s.repo.CancelOrder(ctx, orderID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &models.CancelOrdersResponse{
+		Canceled:    []string{},
+		NotCanceled: map[string]string{},
+	}
+	if canceled {
+		resp.Canceled = append(resp.Canceled, orderID)
+	} else {
+		resp.NotCanceled[orderID] = "order not found or already canceled"
+	}
+	return resp, nil
 }
 
 // CancelOrders cancels multiple orders.
-func (s *Service) CancelOrders(ctx context.Context, userID string, orderIDs []string) error {
-	for _, id := range orderIDs {
-		if err := s.repo.CancelOrder(ctx, id, userID); err != nil {
-			slog.Warn("failed to cancel order", "order_id", id, "error", err)
-		}
+func (s *Service) CancelOrders(ctx context.Context, userID string, orderIDs []string) (*models.CancelOrdersResponse, error) {
+	resp := &models.CancelOrdersResponse{
+		Canceled:    []string{},
+		NotCanceled: map[string]string{},
 	}
-	return nil
+	for _, id := range orderIDs {
+		canceled, err := s.repo.CancelOrder(ctx, id, userID)
+		if err != nil {
+			slog.Warn("failed to cancel order", "order_id", id, "error", err)
+			resp.NotCanceled[id] = err.Error()
+			continue
+		}
+		if canceled {
+			resp.Canceled = append(resp.Canceled, id)
+			continue
+		}
+		resp.NotCanceled[id] = "order not found or already canceled"
+	}
+	return resp, nil
 }
 
 // CancelAll cancels all live orders for a user.
-func (s *Service) CancelAll(ctx context.Context, userID string) (int64, error) {
-	return s.repo.CancelAllOrders(ctx, userID)
+func (s *Service) CancelAll(ctx context.Context, userID string) (*models.CancelOrdersResponse, error) {
+	canceled, err := s.repo.CancelOrdersByFilter(ctx, userID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &models.CancelOrdersResponse{
+		Canceled:    canceled,
+		NotCanceled: map[string]string{},
+	}, nil
 }
 
 // CancelMarketOrders cancels all live orders for a user in a specific market.
-func (s *Service) CancelMarketOrders(ctx context.Context, userID, market string) (int64, error) {
-	return s.repo.CancelMarketOrders(ctx, userID, market)
+func (s *Service) CancelMarketOrders(ctx context.Context, userID string, market, assetID *string) (*models.CancelOrdersResponse, error) {
+	canceled, err := s.repo.CancelOrdersByFilter(ctx, userID, market, assetID)
+	if err != nil {
+		return nil, err
+	}
+	return &models.CancelOrdersResponse{
+		Canceled:    canceled,
+		NotCanceled: map[string]string{},
+	}, nil
 }
 
 // GetOrder returns a single order.
@@ -465,4 +520,124 @@ func deriveOrderPriceAndSize(side, makerAmountStr, takerAmountStr string) (float
 	size = size / 1e6
 
 	return price, size, nil
+}
+
+// fetchAndStoreToken fetches a token's market from the Gamma API, stores it in the DB,
+// and returns the outcome token.
+func (s *Service) fetchAndStoreToken(ctx context.Context, tokenID string) (*models.OutcomeToken, error) {
+	url := fmt.Sprintf("%s/markets?clob_token_ids=%s", s.gammaURL, tokenID)
+	resp, err := s.httpClient.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch gamma market: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gamma API returned %d", resp.StatusCode)
+	}
+
+	var markets []struct {
+		ConditionID  string `json:"condition_id"`
+		QuestionID   string `json:"question_id"`
+		Question     string `json:"question"`
+		Slug         string `json:"slug"`
+		Active       bool   `json:"active"`
+		Closed       bool   `json:"closed"`
+		NegRisk      bool   `json:"neg_risk"`
+		TickSize     string `json:"minimum_tick_size"`
+		MinOrderSize string `json:"minimum_order_size"`
+		ClobTokenIds string `json:"clobTokenIds"`
+		Outcomes     string `json:"outcomes"`
+		Tokens       []struct {
+			TokenID string `json:"token_id"`
+			Outcome string `json:"outcome"`
+			Winner  bool   `json:"winner"`
+		} `json:"tokens"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&markets); err != nil {
+		return nil, fmt.Errorf("decode gamma response: %w", err)
+	}
+
+	if len(markets) == 0 {
+		return nil, fmt.Errorf("no market found for token %s", tokenID)
+	}
+
+	m := markets[0]
+	marketID := m.ConditionID
+	if marketID == "" {
+		marketID = m.QuestionID
+	}
+
+	tickSize := m.TickSize
+	if tickSize == "" {
+		tickSize = "0.01"
+	}
+	minOrderSize := m.MinOrderSize
+	if minOrderSize == "" {
+		minOrderSize = "5"
+	}
+
+	market := &models.Market{
+		ID:           marketID,
+		ConditionID:  m.ConditionID,
+		Question:     m.Question,
+		Slug:         m.Slug,
+		Active:       m.Active,
+		Closed:       m.Closed,
+		NegRisk:      m.NegRisk,
+		TickSize:     tickSize,
+		MinOrderSize: minOrderSize,
+	}
+
+	// Build outcome tokens from the tokens array if present,
+	// otherwise parse clobTokenIds + outcomes JSON strings from the API.
+	var outcomeTokens []models.OutcomeToken
+	if len(m.Tokens) > 0 {
+		for _, t := range m.Tokens {
+			var winner *bool
+			if m.Closed {
+				w := t.Winner
+				winner = &w
+			}
+			outcomeTokens = append(outcomeTokens, models.OutcomeToken{
+				TokenID:  t.TokenID,
+				MarketID: marketID,
+				Outcome:  t.Outcome,
+				Winner:   winner,
+			})
+		}
+	} else if m.ClobTokenIds != "" && m.Outcomes != "" {
+		var clobIDs []string
+		var outcomes []string
+		if err := json.Unmarshal([]byte(m.ClobTokenIds), &clobIDs); err != nil {
+			return nil, fmt.Errorf("parse clobTokenIds: %w", err)
+		}
+		if err := json.Unmarshal([]byte(m.Outcomes), &outcomes); err != nil {
+			return nil, fmt.Errorf("parse outcomes: %w", err)
+		}
+		for i, id := range clobIDs {
+			outcome := ""
+			if i < len(outcomes) {
+				outcome = outcomes[i]
+			}
+			outcomeTokens = append(outcomeTokens, models.OutcomeToken{
+				TokenID:  id,
+				MarketID: marketID,
+				Outcome:  outcome,
+			})
+		}
+	}
+
+	if err := s.repo.UpsertMarketAndTokens(ctx, market, outcomeTokens); err != nil {
+		return nil, err
+	}
+
+	// Return the requested token
+	for i := range outcomeTokens {
+		if outcomeTokens[i].TokenID == tokenID {
+			return &outcomeTokens[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("token %s not found in market response", tokenID)
 }

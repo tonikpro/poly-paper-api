@@ -91,14 +91,14 @@ func (r *Repository) CreateCollateralWallet(ctx context.Context, userID string, 
 
 // API Key operations
 
-func (r *Repository) CreateAPIKey(ctx context.Context, userID, apiKey, apiSecret, passphrase string) (*models.APIKey, error) {
+func (r *Repository) CreateAPIKey(ctx context.Context, userID, id, apiSecret, passphrase string) (*models.APIKey, error) {
 	key := &models.APIKey{}
 	err := r.pool.QueryRow(ctx,
-		`INSERT INTO api_keys (user_id, api_key, api_secret, passphrase)
+		`INSERT INTO api_keys (id, user_id, api_secret, passphrase)
 		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, api_key, api_secret, passphrase, created_at`,
-		userID, apiKey, apiSecret, passphrase,
-	).Scan(&key.ID, &key.APIKey, &key.APISecret, &key.Passphrase, &key.CreatedAt)
+		 RETURNING id, api_secret, passphrase, created_at`,
+		id, userID, apiSecret, passphrase,
+	).Scan(&key.ID, &key.APISecret, &key.Passphrase, &key.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create api key: %w", err)
 	}
@@ -106,9 +106,12 @@ func (r *Repository) CreateAPIKey(ctx context.Context, userID, apiKey, apiSecret
 	return key, nil
 }
 
-func (r *Repository) GetAPIKeysByUserID(ctx context.Context, userID string) ([]string, error) {
+func (r *Repository) GetAPIKeysByUserID(ctx context.Context, userID string) ([]models.APIKey, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT api_key FROM api_keys WHERE user_id = $1`,
+		`SELECT id, user_id, api_secret, passphrase, created_at
+		 FROM api_keys
+		 WHERE user_id = $1
+		 ORDER BY created_at DESC`,
 		userID,
 	)
 	if err != nil {
@@ -116,10 +119,10 @@ func (r *Repository) GetAPIKeysByUserID(ctx context.Context, userID string) ([]s
 	}
 	defer rows.Close()
 
-	var keys []string
+	var keys []models.APIKey
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
+		var key models.APIKey
+		if err := rows.Scan(&key.ID, &key.UserID, &key.APISecret, &key.Passphrase, &key.CreatedAt); err != nil {
 			return nil, err
 		}
 		keys = append(keys, key)
@@ -130,10 +133,10 @@ func (r *Repository) GetAPIKeysByUserID(ctx context.Context, userID string) ([]s
 func (r *Repository) GetAPIKeyByKey(ctx context.Context, apiKey string) (*models.APIKey, error) {
 	key := &models.APIKey{}
 	err := r.pool.QueryRow(ctx,
-		`SELECT ak.id, ak.user_id, ak.api_key, ak.api_secret, ak.passphrase, ak.created_at
-		 FROM api_keys ak WHERE ak.api_key = $1`,
+		`SELECT ak.id, ak.user_id, ak.api_secret, ak.passphrase, ak.created_at
+		 FROM api_keys ak WHERE ak.id = $1`,
 		apiKey,
-	).Scan(&key.ID, &key.UserID, &key.APIKey, &key.APISecret, &key.Passphrase, &key.CreatedAt)
+	).Scan(&key.ID, &key.UserID, &key.APISecret, &key.Passphrase, &key.CreatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -146,10 +149,10 @@ func (r *Repository) GetAPIKeyByKey(ctx context.Context, apiKey string) (*models
 func (r *Repository) GetAPIKeyByUserID(ctx context.Context, userID string) (*models.APIKey, error) {
 	key := &models.APIKey{}
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, user_id, api_key, api_secret, passphrase, created_at
+		`SELECT id, user_id, api_secret, passphrase, created_at
 		 FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
 		userID,
-	).Scan(&key.ID, &key.UserID, &key.APIKey, &key.APISecret, &key.Passphrase, &key.CreatedAt)
+	).Scan(&key.ID, &key.UserID, &key.APISecret, &key.Passphrase, &key.CreatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -160,12 +163,12 @@ func (r *Repository) GetAPIKeyByUserID(ctx context.Context, userID string) (*mod
 }
 
 func (r *Repository) DeleteAPIKey(ctx context.Context, apiKey string) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM api_keys WHERE api_key = $1`, apiKey)
+	_, err := r.pool.Exec(ctx, `DELETE FROM api_keys WHERE id = $1`, apiKey)
 	return err
 }
 
 func (r *Repository) DeleteAPIKeyForUser(ctx context.Context, userID, apiKey string) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM api_keys WHERE user_id = $1 AND api_key = $2`, userID, apiKey)
+	_, err := r.pool.Exec(ctx, `DELETE FROM api_keys WHERE user_id = $1 AND id = $2`, userID, apiKey)
 	return err
 }
 

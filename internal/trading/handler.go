@@ -1,7 +1,10 @@
 package trading
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/tonikpro/poly-paper-api/internal/auth"
@@ -23,8 +26,16 @@ func NewCLOBTradingHandler(svc *Service) *CLOBTradingHandler {
 func (h *CLOBTradingHandler) PostOrder(w http.ResponseWriter, r *http.Request, params clob.PostOrderParams) {
 	userID := auth.GetUserID(r.Context())
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, clob.ErrorResponse{Error: ptr("failed to read body")})
+		return
+	}
+	slog.Debug("POST /order raw body", "body", string(bodyBytes), "len", len(bodyBytes))
+
 	var req models.PostOrderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
+		slog.Error("POST /order decode failed", "error", err, "body", string(bodyBytes))
 		writeJSON(w, http.StatusBadRequest, clob.ErrorResponse{Error: ptr("invalid request body")})
 		return
 	}
@@ -91,12 +102,13 @@ func (h *CLOBTradingHandler) CancelOrder(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	if err := h.svc.CancelOrder(r.Context(), userID, req.OrderID); err != nil {
-		writeJSON(w, http.StatusNotFound, clob.ErrorResponse{Error: ptr(err.Error())})
+	resp, err := h.svc.CancelOrder(r.Context(), userID, req.OrderID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, clob.ErrorResponse{Error: ptr(err.Error())})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // CancelOrders handles DELETE /orders (batch)
@@ -109,25 +121,26 @@ func (h *CLOBTradingHandler) CancelOrders(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := h.svc.CancelOrders(r.Context(), userID, orderIDs); err != nil {
+	resp, err := h.svc.CancelOrders(r.Context(), userID, orderIDs)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, clob.ErrorResponse{Error: ptr(err.Error())})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // CancelAll handles DELETE /cancel-all
 func (h *CLOBTradingHandler) CancelAll(w http.ResponseWriter, r *http.Request, params clob.CancelAllParams) {
 	userID := auth.GetUserID(r.Context())
 
-	count, err := h.svc.CancelAll(r.Context(), userID)
+	resp, err := h.svc.CancelAll(r.Context(), userID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, clob.ErrorResponse{Error: ptr(err.Error())})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "canceled": count})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // CancelMarketOrders handles DELETE /cancel-market-orders
@@ -135,20 +148,21 @@ func (h *CLOBTradingHandler) CancelMarketOrders(w http.ResponseWriter, r *http.R
 	userID := auth.GetUserID(r.Context())
 
 	var req struct {
-		Market string `json:"market"`
+		Market  *string `json:"market"`
+		AssetID *string `json:"asset_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Market == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, clob.ErrorResponse{Error: ptr("invalid request body")})
 		return
 	}
 
-	count, err := h.svc.CancelMarketOrders(r.Context(), userID, req.Market)
+	resp, err := h.svc.CancelMarketOrders(r.Context(), userID, req.Market, req.AssetID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, clob.ErrorResponse{Error: ptr(err.Error())})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "canceled": count})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // GetOrder handles GET /data/order/{orderId}

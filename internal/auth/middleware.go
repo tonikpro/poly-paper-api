@@ -99,11 +99,8 @@ func L2Middleware(svc *Service) func(http.Handler) http.Handler {
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
 
-			// Build the path including query string
+			// Build the path — SDK signs over path WITHOUT query params
 			path := r.URL.Path
-			if r.URL.RawQuery != "" {
-				path = path + "?" + r.URL.RawQuery
-			}
 			// Strip the /clob prefix since SDK sends paths without it
 			path = strings.TrimPrefix(path, "/clob")
 

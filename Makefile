@@ -34,7 +34,7 @@ test:
 
 # Run SDK compatibility tests
 test-sdk:
-	cd tests/sdk_compat && python -m pytest -v
+	cd tests/sdk_compat && python3 -m pytest -v
 
 # Tidy go modules
 tidy:

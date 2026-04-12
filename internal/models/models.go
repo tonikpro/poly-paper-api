@@ -5,21 +5,24 @@ import (
 )
 
 type User struct {
-	ID                    string    `json:"id"`
-	Email                 string    `json:"email"`
-	PasswordHash          string    `json:"-"`
-	EthAddress            string    `json:"eth_address,omitempty"`
-	EthPrivateKeyEncrypted []byte   `json:"-"`
-	CreatedAt             time.Time `json:"created_at"`
+	ID                     string    `json:"id"`
+	Email                  string    `json:"email"`
+	PasswordHash           string    `json:"-"`
+	EthAddress             string    `json:"eth_address,omitempty"`
+	EthPrivateKeyEncrypted []byte    `json:"-"`
+	CreatedAt              time.Time `json:"created_at"`
 }
 
 type APIKey struct {
-	ID         string    `json:"id"`
+	ID         string    `json:"apiKey"`
 	UserID     string    `json:"-"`
-	APIKey     string    `json:"apiKey"`
 	APISecret  string    `json:"secret"`
 	Passphrase string    `json:"passphrase"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+type APIKeysResponse struct {
+	APIKeys []APIKey `json:"apiKeys"`
 }
 
 type Wallet struct {
@@ -53,9 +56,9 @@ type OutcomeToken struct {
 	Winner   *bool  `json:"winner"`  // nil = unresolved
 }
 
-// SignedOrder represents the wire-format order from Polymarket SDK
+// SignedOrder represents the wire-format order from Polymarket SDK.
 type SignedOrder struct {
-	Salt          string `json:"salt"`
+	Salt          int64  `json:"salt"`
 	Maker         string `json:"maker"`
 	Signer        string `json:"signer"`
 	Taker         string `json:"taker"`
@@ -179,6 +182,11 @@ type BalanceAllowanceResponse struct {
 // CancelRequest matches Polymarket's DELETE /order body
 type CancelRequest struct {
 	OrderID string `json:"orderID"`
+}
+
+type CancelOrdersResponse struct {
+	Canceled    []string          `json:"canceled"`
+	NotCanceled map[string]string `json:"not_canceled"`
 }
 
 type Position struct {
