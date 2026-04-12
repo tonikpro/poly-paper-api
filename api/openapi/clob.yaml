@@ -437,6 +437,12 @@ paths:
         - $ref: "#/components/parameters/PolyTimestamp"
         - $ref: "#/components/parameters/PolyApiKey"
         - $ref: "#/components/parameters/PolyPassphrase"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DropNotificationsRequest"
       responses:
         "200":
           description: Notifications dropped
@@ -505,9 +511,19 @@ paths:
         - $ref: "#/components/parameters/PolyTimestamp"
         - $ref: "#/components/parameters/PolyApiKey"
         - $ref: "#/components/parameters/PolyPassphrase"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
       responses:
         "200":
           description: Heartbeat acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatResponse"
 
   # --- Market Data (public, proxied to Polymarket) ---
   /tick-size:
@@ -518,6 +534,21 @@ paths:
       parameters:
         - name: token_id
           in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tick size
+
+  /tick-size/{token_id}:
+    get:
+      operationId: getTickSizeByTokenId
+      tags: [market-data]
+      summary: Get tick size for a token by path parameter
+      parameters:
+        - name: token_id
+          in: path
           required: true
           schema:
             type: string
@@ -545,9 +576,38 @@ paths:
       operationId: getFeeRate
       tags: [market-data]
       summary: Get fee rate in bps
+      parameters:
+        - name: token_id
+          in: query
+          required: true
+          schema:
+            type: string
       responses:
         "200":
           description: Fee rate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeeRateResponse"
+
+  /fee-rate/{token_id}:
+    get:
+      operationId: getFeeRateByTokenId
+      tags: [market-data]
+      summary: Get fee rate in bps by path parameter
+      parameters:
+        - name: token_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Fee rate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeeRateResponse"
 
   /book:
     get:
@@ -632,6 +692,24 @@ paths:
           description: Price
 
   /prices:
+    get:
+      operationId: getPricesByQuery
+      tags: [market-data]
+      summary: Get prices for multiple tokens using query parameters
+      parameters:
+        - name: token_ids
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: sides
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Prices
     post:
       operationId: getPrices
       tags: [market-data]
@@ -694,6 +772,19 @@ paths:
           description: Last trade price
 
   /last-trades-prices:
+    get:
+      operationId: getLastTradesPricesByQuery
+      tags: [market-data]
+      summary: Get last trade prices for multiple tokens using query parameters
+      parameters:
+        - name: token_ids
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Last trade prices
     post:
       operationId: getLastTradesPrices
       tags: [market-data]
@@ -911,6 +1002,14 @@ components:
         orderID:
           type: string
 
+    DropNotificationsRequest:
+      type: object
+      properties:
+        ids:
+          type: array
+          items:
+            type: string
+
     CancelOrdersResponse:
       type: object
       properties:
@@ -1027,6 +1126,27 @@ components:
         balance:
           type: string
         allowance:
+          type: string
+
+    FeeRateResponse:
+      type: object
+      required: [base_fee]
+      properties:
+        base_fee:
+          type: integer
+          format: int64
+
+    HeartbeatRequest:
+      type: object
+      properties:
+        heartbeat_id:
+          type: string
+
+    HeartbeatResponse:
+      type: object
+      required: [heartbeat_id]
+      properties:
+        heartbeat_id:
           type: string
 
     ErrorResponse:

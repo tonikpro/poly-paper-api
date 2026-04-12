@@ -96,9 +96,35 @@ type CancelOrderRequest struct {
 	OrderID string `json:"orderID"`
 }
 
+// CancelOrdersResponse defines model for CancelOrdersResponse.
+type CancelOrdersResponse struct {
+	Canceled    *[]string          `json:"canceled,omitempty"`
+	NotCanceled *map[string]string `json:"not_canceled,omitempty"`
+}
+
+// DropNotificationsRequest defines model for DropNotificationsRequest.
+type DropNotificationsRequest struct {
+	Ids *[]string `json:"ids,omitempty"`
+}
+
 // ErrorResponse defines model for ErrorResponse.
 type ErrorResponse struct {
 	Error *string `json:"error,omitempty"`
+}
+
+// FeeRateResponse defines model for FeeRateResponse.
+type FeeRateResponse struct {
+	BaseFee int64 `json:"base_fee"`
+}
+
+// HeartbeatRequest defines model for HeartbeatRequest.
+type HeartbeatRequest struct {
+	HeartbeatId *string `json:"heartbeat_id,omitempty"`
+}
+
+// HeartbeatResponse defines model for HeartbeatResponse.
+type HeartbeatResponse struct {
+	HeartbeatId string `json:"heartbeat_id"`
 }
 
 // OpenOrder defines model for OpenOrder.
@@ -308,7 +334,8 @@ type CancelAllParams struct {
 
 // CancelMarketOrdersJSONBody defines parameters for CancelMarketOrders.
 type CancelMarketOrdersJSONBody struct {
-	Market *string `json:"market,omitempty"`
+	AssetId *string `json:"asset_id,omitempty"`
+	Market  *string `json:"market,omitempty"`
 }
 
 // CancelMarketOrdersParams defines parameters for CancelMarketOrders.
@@ -361,9 +388,19 @@ type GetTradesParams struct {
 	POLYPASSPHRASE PolyPassphrase  `json:"POLY_PASSPHRASE"`
 }
 
+// GetFeeRateParams defines parameters for GetFeeRate.
+type GetFeeRateParams struct {
+	TokenId string `form:"token_id" json:"token_id"`
+}
+
 // GetLastTradePriceParams defines parameters for GetLastTradePrice.
 type GetLastTradePriceParams struct {
 	TokenId string `form:"token_id" json:"token_id"`
+}
+
+// GetLastTradesPricesByQueryParams defines parameters for GetLastTradesPricesByQuery.
+type GetLastTradesPricesByQueryParams struct {
+	TokenIds string `form:"token_ids" json:"token_ids"`
 }
 
 // GetLastTradesPricesJSONBody defines parameters for GetLastTradesPrices.
@@ -493,6 +530,12 @@ type GetPriceParams struct {
 	Side    string `form:"side" json:"side"`
 }
 
+// GetPricesByQueryParams defines parameters for GetPricesByQuery.
+type GetPricesByQueryParams struct {
+	TokenIds string `form:"token_ids" json:"token_ids"`
+	Sides    string `form:"sides" json:"sides"`
+}
+
 // GetPricesJSONBody defines parameters for GetPrices.
 type GetPricesJSONBody = []map[string]interface{}
 
@@ -532,6 +575,9 @@ type GetLastTradesPricesJSONRequestBody = GetLastTradesPricesJSONBody
 // GetMidpointsJSONRequestBody defines body for GetMidpoints for application/json ContentType.
 type GetMidpointsJSONRequestBody = GetMidpointsJSONBody
 
+// DropNotificationsJSONRequestBody defines body for DropNotifications for application/json ContentType.
+type DropNotificationsJSONRequestBody = DropNotificationsRequest
+
 // CancelOrderJSONRequestBody defines body for CancelOrder for application/json ContentType.
 type CancelOrderJSONRequestBody = CancelOrderRequest
 
@@ -552,6 +598,9 @@ type GetPricesJSONRequestBody = GetPricesJSONBody
 
 // GetSpreadsJSONRequestBody defines body for GetSpreads for application/json ContentType.
 type GetSpreadsJSONRequestBody = GetSpreadsJSONBody
+
+// PostHeartbeatJSONRequestBody defines body for PostHeartbeat for application/json ContentType.
+type PostHeartbeatJSONRequestBody = HeartbeatRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -599,10 +648,16 @@ type ServerInterface interface {
 	GetTrades(w http.ResponseWriter, r *http.Request, params GetTradesParams)
 	// Get fee rate in bps
 	// (GET /fee-rate)
-	GetFeeRate(w http.ResponseWriter, r *http.Request)
+	GetFeeRate(w http.ResponseWriter, r *http.Request, params GetFeeRateParams)
+	// Get fee rate in bps by path parameter
+	// (GET /fee-rate/{token_id})
+	GetFeeRateByTokenId(w http.ResponseWriter, r *http.Request, tokenId string)
 	// Get last trade price for a token
 	// (GET /last-trade-price)
 	GetLastTradePrice(w http.ResponseWriter, r *http.Request, params GetLastTradePriceParams)
+	// Get last trade prices for multiple tokens using query parameters
+	// (GET /last-trades-prices)
+	GetLastTradesPricesByQuery(w http.ResponseWriter, r *http.Request, params GetLastTradesPricesByQueryParams)
 	// Get last trade prices for multiple tokens
 	// (POST /last-trades-prices)
 	GetLastTradesPrices(w http.ResponseWriter, r *http.Request)
@@ -651,6 +706,9 @@ type ServerInterface interface {
 	// Get price for a token and side
 	// (GET /price)
 	GetPrice(w http.ResponseWriter, r *http.Request, params GetPriceParams)
+	// Get prices for multiple tokens using query parameters
+	// (GET /prices)
+	GetPricesByQuery(w http.ResponseWriter, r *http.Request, params GetPricesByQueryParams)
 	// Get prices for multiple tokens
 	// (POST /prices)
 	GetPrices(w http.ResponseWriter, r *http.Request)
@@ -672,6 +730,9 @@ type ServerInterface interface {
 	// Get tick size for a token
 	// (GET /tick-size)
 	GetTickSize(w http.ResponseWriter, r *http.Request, params GetTickSizeParams)
+	// Get tick size for a token by path parameter
+	// (GET /tick-size/{token_id})
+	GetTickSizeByTokenId(w http.ResponseWriter, r *http.Request, tokenId string)
 	// Get server UNIX timestamp
 	// (GET /time)
 	GetServerTime(w http.ResponseWriter, r *http.Request)
@@ -770,13 +831,25 @@ func (_ Unimplemented) GetTrades(w http.ResponseWriter, r *http.Request, params 
 
 // Get fee rate in bps
 // (GET /fee-rate)
-func (_ Unimplemented) GetFeeRate(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) GetFeeRate(w http.ResponseWriter, r *http.Request, params GetFeeRateParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Get fee rate in bps by path parameter
+// (GET /fee-rate/{token_id})
+func (_ Unimplemented) GetFeeRateByTokenId(w http.ResponseWriter, r *http.Request, tokenId string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get last trade price for a token
 // (GET /last-trade-price)
 func (_ Unimplemented) GetLastTradePrice(w http.ResponseWriter, r *http.Request, params GetLastTradePriceParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Get last trade prices for multiple tokens using query parameters
+// (GET /last-trades-prices)
+func (_ Unimplemented) GetLastTradesPricesByQuery(w http.ResponseWriter, r *http.Request, params GetLastTradesPricesByQueryParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -876,6 +949,12 @@ func (_ Unimplemented) GetPrice(w http.ResponseWriter, r *http.Request, params G
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// Get prices for multiple tokens using query parameters
+// (GET /prices)
+func (_ Unimplemented) GetPricesByQuery(w http.ResponseWriter, r *http.Request, params GetPricesByQueryParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Get prices for multiple tokens
 // (POST /prices)
 func (_ Unimplemented) GetPrices(w http.ResponseWriter, r *http.Request) {
@@ -915,6 +994,12 @@ func (_ Unimplemented) GetSpreads(w http.ResponseWriter, r *http.Request) {
 // Get tick size for a token
 // (GET /tick-size)
 func (_ Unimplemented) GetTickSize(w http.ResponseWriter, r *http.Request, params GetTickSizeParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Get tick size for a token by path parameter
+// (GET /tick-size/{token_id})
+func (_ Unimplemented) GetTickSizeByTokenId(w http.ResponseWriter, r *http.Request, tokenId string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -2527,8 +2612,53 @@ func (siw *ServerInterfaceWrapper) GetTrades(w http.ResponseWriter, r *http.Requ
 // GetFeeRate operation middleware
 func (siw *ServerInterfaceWrapper) GetFeeRate(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetFeeRateParams
+
+	// ------------- Required query parameter "token_id" -------------
+
+	if paramValue := r.URL.Query().Get("token_id"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "token_id"})
+		return
+	}
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "token_id", r.URL.Query(), &params.TokenId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token_id", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetFeeRate(w, r)
+		siw.Handler.GetFeeRate(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetFeeRateByTokenId operation middleware
+func (siw *ServerInterfaceWrapper) GetFeeRateByTokenId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "token_id" -------------
+	var tokenId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "token_id", chi.URLParam(r, "token_id"), &tokenId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetFeeRateByTokenId(w, r, tokenId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2563,6 +2693,40 @@ func (siw *ServerInterfaceWrapper) GetLastTradePrice(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetLastTradePrice(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetLastTradesPricesByQuery operation middleware
+func (siw *ServerInterfaceWrapper) GetLastTradesPricesByQuery(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetLastTradesPricesByQueryParams
+
+	// ------------- Required query parameter "token_ids" -------------
+
+	if paramValue := r.URL.Query().Get("token_ids"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "token_ids"})
+		return
+	}
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "token_ids", r.URL.Query(), &params.TokenIds, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token_ids", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetLastTradesPricesByQuery(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3897,6 +4061,55 @@ func (siw *ServerInterfaceWrapper) GetPrice(w http.ResponseWriter, r *http.Reque
 	handler.ServeHTTP(w, r)
 }
 
+// GetPricesByQuery operation middleware
+func (siw *ServerInterfaceWrapper) GetPricesByQuery(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPricesByQueryParams
+
+	// ------------- Required query parameter "token_ids" -------------
+
+	if paramValue := r.URL.Query().Get("token_ids"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "token_ids"})
+		return
+	}
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "token_ids", r.URL.Query(), &params.TokenIds, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token_ids", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "sides" -------------
+
+	if paramValue := r.URL.Query().Get("sides"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "sides"})
+		return
+	}
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "sides", r.URL.Query(), &params.Sides, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "sides", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPricesByQuery(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetPrices operation middleware
 func (siw *ServerInterfaceWrapper) GetPrices(w http.ResponseWriter, r *http.Request) {
 
@@ -4026,6 +4239,31 @@ func (siw *ServerInterfaceWrapper) GetTickSize(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetTickSize(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTickSizeByTokenId operation middleware
+func (siw *ServerInterfaceWrapper) GetTickSizeByTokenId(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "token_id" -------------
+	var tokenId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "token_id", chi.URLParam(r, "token_id"), &tokenId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "token_id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTickSizeByTokenId(w, r, tokenId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4344,7 +4582,13 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/fee-rate", wrapper.GetFeeRate)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/fee-rate/{token_id}", wrapper.GetFeeRateByTokenId)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/last-trade-price", wrapper.GetLastTradePrice)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/last-trades-prices", wrapper.GetLastTradesPricesByQuery)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/last-trades-prices", wrapper.GetLastTradesPrices)
@@ -4395,6 +4639,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/price", wrapper.GetPrice)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/prices", wrapper.GetPricesByQuery)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/prices", wrapper.GetPrices)
 	})
 	r.Group(func(r chi.Router) {
@@ -4416,6 +4663,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/tick-size", wrapper.GetTickSize)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/tick-size/{token_id}", wrapper.GetTickSizeByTokenId)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/time", wrapper.GetServerTime)
 	})
 	r.Group(func(r chi.Router) {
@@ -4428,52 +4678,56 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"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",
-	"NAVImzgmC7Dq6+Xl/wEAAP//gmKZJ1pPAAA=",
+	"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",
+	"AaRNHJNHsMLu+fm/AQAA//8UDSGPmloAAA==",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

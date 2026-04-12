@@ -262,7 +262,7 @@ func (h *CLOBTradingHandler) GetNotifications(w http.ResponseWriter, r *http.Req
 }
 
 func (h *CLOBTradingHandler) DropNotifications(w http.ResponseWriter, r *http.Request, params clob.DropNotificationsParams) {
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *CLOBTradingHandler) IsOrderScoring(w http.ResponseWriter, r *http.Request, params clob.IsOrderScoringParams) {
@@ -274,11 +274,8 @@ func (h *CLOBTradingHandler) AreOrdersScoring(w http.ResponseWriter, r *http.Req
 }
 
 func (h *CLOBTradingHandler) PostHeartbeat(w http.ResponseWriter, r *http.Request, params clob.PostHeartbeatParams) {
-	writeJSON(w, http.StatusOK, map[string]bool{"success": true})
-}
-
-func (h *CLOBTradingHandler) GetFeeRate(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"fee_rate_bps": "0"})
+	const heartbeatID = "paper-heartbeat"
+	writeJSON(w, http.StatusOK, clob.HeartbeatResponse{HeartbeatId: heartbeatID})
 }
 
 // --- Helpers ---

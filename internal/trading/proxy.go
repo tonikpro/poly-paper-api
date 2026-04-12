@@ -102,7 +102,19 @@ func (h *ProxyHandler) GetTickSize(w http.ResponseWriter, r *http.Request, param
 	h.proxy(w, r)
 }
 
+func (h *ProxyHandler) GetTickSizeByTokenId(w http.ResponseWriter, r *http.Request, tokenId string) {
+	h.proxy(w, r)
+}
+
 func (h *ProxyHandler) GetNegRisk(w http.ResponseWriter, r *http.Request, params clob.GetNegRiskParams) {
+	h.proxy(w, r)
+}
+
+func (h *ProxyHandler) GetFeeRate(w http.ResponseWriter, r *http.Request, params clob.GetFeeRateParams) {
+	h.proxy(w, r)
+}
+
+func (h *ProxyHandler) GetFeeRateByTokenId(w http.ResponseWriter, r *http.Request, tokenId string) {
 	h.proxy(w, r)
 }
 
@@ -110,7 +122,15 @@ func (h *ProxyHandler) GetLastTradePrice(w http.ResponseWriter, r *http.Request,
 	h.proxy(w, r)
 }
 
+func (h *ProxyHandler) GetLastTradesPricesByQuery(w http.ResponseWriter, r *http.Request, params clob.GetLastTradesPricesByQueryParams) {
+	h.proxy(w, r)
+}
+
 func (h *ProxyHandler) GetLastTradesPrices(w http.ResponseWriter, r *http.Request) {
+	h.proxy(w, r)
+}
+
+func (h *ProxyHandler) GetPricesByQuery(w http.ResponseWriter, r *http.Request, params clob.GetPricesByQueryParams) {
 	h.proxy(w, r)
 }
 

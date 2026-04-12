@@ -121,8 +121,12 @@ func (s *CLOBServer) PostHeartbeat(w http.ResponseWriter, r *http.Request, param
 	s.trading.PostHeartbeat(w, r, params)
 }
 
-func (s *CLOBServer) GetFeeRate(w http.ResponseWriter, r *http.Request) {
-	s.trading.GetFeeRate(w, r)
+func (s *CLOBServer) GetFeeRate(w http.ResponseWriter, r *http.Request, params clob.GetFeeRateParams) {
+	s.proxy.GetFeeRate(w, r, params)
+}
+
+func (s *CLOBServer) GetFeeRateByTokenId(w http.ResponseWriter, r *http.Request, tokenId string) {
+	s.proxy.GetFeeRateByTokenId(w, r, tokenId)
 }
 
 // --- Proxy endpoints (public market data) ---
@@ -155,6 +159,10 @@ func (s *CLOBServer) GetPrice(w http.ResponseWriter, r *http.Request, params clo
 	s.proxy.GetPrice(w, r, params)
 }
 
+func (s *CLOBServer) GetPricesByQuery(w http.ResponseWriter, r *http.Request, params clob.GetPricesByQueryParams) {
+	s.proxy.GetPricesByQuery(w, r, params)
+}
+
 func (s *CLOBServer) GetPrices(w http.ResponseWriter, r *http.Request) {
 	s.proxy.GetPrices(w, r)
 }
@@ -171,12 +179,20 @@ func (s *CLOBServer) GetTickSize(w http.ResponseWriter, r *http.Request, params 
 	s.proxy.GetTickSize(w, r, params)
 }
 
+func (s *CLOBServer) GetTickSizeByTokenId(w http.ResponseWriter, r *http.Request, tokenId string) {
+	s.proxy.GetTickSizeByTokenId(w, r, tokenId)
+}
+
 func (s *CLOBServer) GetNegRisk(w http.ResponseWriter, r *http.Request, params clob.GetNegRiskParams) {
 	s.proxy.GetNegRisk(w, r, params)
 }
 
 func (s *CLOBServer) GetLastTradePrice(w http.ResponseWriter, r *http.Request, params clob.GetLastTradePriceParams) {
 	s.proxy.GetLastTradePrice(w, r, params)
+}
+
+func (s *CLOBServer) GetLastTradesPricesByQuery(w http.ResponseWriter, r *http.Request, params clob.GetLastTradesPricesByQueryParams) {
+	s.proxy.GetLastTradesPricesByQuery(w, r, params)
 }
 
 func (s *CLOBServer) GetLastTradesPrices(w http.ResponseWriter, r *http.Request) {

@@ -19,17 +19,18 @@ Implemented locally:
 - L1/L2 CLOB auth for core trading flows
 - Order placement, order queries, trade queries, balance allowance
 - Cancel single, batch, all, and by market
-- Compatibility stubs for notifications, scoring, heartbeat, and fee-rate
+- Compatibility stubs for notifications, scoring, and heartbeat
 
 Proxied to live Polymarket CLOB:
 - `GET /time`
 - `GET /tick-size`
+- `GET /tick-size/{token_id}`
 - `GET /neg-risk`
 - `GET /book`, `POST /books`
 - `GET /midpoint`, `POST /midpoints`
-- `GET /price`, `POST /prices`
+- `GET /price`, `GET /prices`, `POST /prices`
 - `GET /spread`, `POST /spreads`
-- `GET /last-trade-price`, `POST /last-trades-prices`
+- `GET /last-trade-price`, `GET /last-trades-prices`, `POST /last-trades-prices`
 - `GET /sampling-simplified-markets`
 - `GET /sampling-markets`
 - `GET /simplified-markets`
@@ -662,6 +663,7 @@ Public endpoints (no auth, proxied to `https://clob.polymarket.com`):
 | GET | `/tick-size` | Tick size for a token |
 | GET | `/neg-risk` | Neg-risk flag for a token |
 | GET | `/fee-rate` | Fee rate in bps |
+| GET | `/fee-rate/{token_id}` | Fee rate in bps by path parameter |
 | GET | `/book` | Order book for a token |
 | POST | `/books` | Order books for multiple tokens |
 | GET | `/midpoint` | Midpoint price |

@@ -35,26 +35,30 @@ Implemented locally:
 - `GET /balance-allowance`
 - `GET /balance-allowance/update`
 - `GET /notifications` stubbed to `[]`
-- `DELETE /notifications` stubbed to `{ "success": true }`
+- `DELETE /notifications` accepts official body shape and returns empty `200`
 - `GET /order-scoring` stubbed to `{ "scoring": false }`
 - `POST /orders-scoring` stubbed to `{ "scoring": false }`
-- `POST /v1/heartbeats` stubbed to `{ "success": true }`
-- `GET /fee-rate` local stub returns `{ "fee_rate_bps": "0" }`
+- `POST /v1/heartbeats` returns official-looking `{ "heartbeat_id": "paper-heartbeat" }`
 
 Proxied upstream to real Polymarket CLOB:
 
 - `GET /time`
 - `GET /tick-size`
+- `GET /tick-size/{token_id}`
 - `GET /neg-risk`
+- `GET /fee-rate`
+- `GET /fee-rate/{token_id}`
 - `GET /book`
 - `POST /books`
 - `GET /midpoint`
 - `POST /midpoints`
 - `GET /price`
+- `GET /prices`
 - `POST /prices`
 - `GET /spread`
 - `POST /spreads`
 - `GET /last-trade-price`
+- `GET /last-trades-prices`
 - `POST /last-trades-prices`
 - `GET /sampling-simplified-markets`
 - `GET /sampling-markets`
@@ -234,10 +238,10 @@ Fields:
 | `GET` | `/balance-allowance` | L2 | query: `asset_type`, optional `token_id`, optional `signature_type` | `asset_type` is `COLLATERAL` or `CONDITIONAL`. |
 | `GET` | `/balance-allowance/update` | L2 | none in repo | Refresh allowance. This repo just returns current balance/allowance view. |
 | `GET` | `/notifications` | L2 | none | Stubbed empty list in this repo. |
-| `DELETE` | `/notifications` | L2 | official SDK type uses `{ ids: string[] }` | This repo ignores ids and returns success. |
+| `DELETE` | `/notifications` | L2 | body: `{ "ids": ["..."] }` | Stubbed. Accepts the official body shape and returns empty `200`. |
 | `GET` | `/order-scoring` | L2 | query: `orderId` in repo, SDK type names `order_id` | Scoring status. Repo always returns false. |
 | `POST` | `/orders-scoring` | L2 | body: `{ "orderIds": ["..."] }` | Bulk scoring. Official SDK models per-order booleans; repo returns a single false flag. |
-| `POST` | `/v1/heartbeats` | L2 | no documented body required for current repo | Keepalive/heartbeat. Repo is a stub. |
+| `POST` | `/v1/heartbeats` | L2 | body: `{ "heartbeat_id": "..." }` | Keepalive/heartbeat. Repo is a stub but returns official-looking `{ "heartbeat_id": "paper-heartbeat" }`. |
 
 ### Public market data
 
@@ -258,17 +262,21 @@ Shared request helpers:
 | Method | Path | Auth | Params | Returns |
 | --- | --- | --- | --- | --- |
 | `GET` | `/tick-size` | public | `token_id` | Tick size string such as `"0.01"`. |
+| `GET` | `/tick-size/{token_id}` | public | path `token_id` | Proxied upstream. Path-parameter variant from official docs. |
 | `GET` | `/neg-risk` | public | `token_id` | Whether market uses neg-risk mechanics. |
-| `GET` | `/fee-rate` | public in this repo | none | Official fee helper exists in SDK; this repo returns fixed zero bps locally. |
+| `GET` | `/fee-rate` | public | `token_id` | Proxied upstream. Returns official payload like `{ "base_fee": 30 }`. |
+| `GET` | `/fee-rate/{token_id}` | public | path `token_id` | Proxied upstream. Path-parameter variant from official docs. |
 | `GET` | `/book` | public | `token_id` | Full order book summary for one token. |
 | `POST` | `/books` | public | body: `[{ "token_id": "..." }]` | Array of order book summaries. |
 | `GET` | `/midpoint` | public | `token_id` | Mid price for one token. |
 | `POST` | `/midpoints` | public | body: `[{ "token_id": "..." }]` | Mid prices for many tokens. |
 | `GET` | `/price` | public | `token_id`, `side` | Price for a side on one token. |
+| `GET` | `/prices` | public | `token_ids`, `sides` | Proxied upstream. Official query-parameter batch variant. |
 | `POST` | `/prices` | public | body: `[{ "token_id": "...", "side": "BUY" }]` | Many side-specific prices. |
 | `GET` | `/spread` | public | `token_id` | Best ask minus best bid. |
 | `POST` | `/spreads` | public | body: `[{ "token_id": "..." }]` | Many spreads. |
 | `GET` | `/last-trade-price` | public | `token_id` | Most recent trade price. |
+| `GET` | `/last-trades-prices` | public | `token_ids` | Proxied upstream. Official query-parameter batch variant. |
 | `POST` | `/last-trades-prices` | public | body: `[{ "token_id": "..." }]` | Many last-trade prices. |
 | `GET` | `/sampling-simplified-markets` | public | none | Sampling feed of simplified markets. |
 | `GET` | `/sampling-markets` | public | none | Sampling feed of markets. |
