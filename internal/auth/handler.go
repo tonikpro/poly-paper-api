@@ -164,6 +164,16 @@ func (h *DashboardHandler) GetDashboardPositions(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"positions": positions})
 }
 
+func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
+	userID := GetUserID(r.Context())
+	stats, err := h.queries.GetStats(r.Context(), userID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get stats"})
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
 func (h *DashboardHandler) GetDashboardTrades(w http.ResponseWriter, r *http.Request, params dashboard.GetDashboardTradesParams) {
 	userID := GetUserID(r.Context())
 	limit := 50

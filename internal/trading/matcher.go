@@ -2,13 +2,19 @@ package trading
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
 	"time"
 )
+
+// ErrOrderBookNotFound is returned when the orderbook API returns 404,
+// meaning the market no longer exists (e.g. it has resolved or been closed).
+var ErrOrderBookNotFound = errors.New("orderbook not found")
 
 // OrderBookResponse is Polymarket's GET /book response
 type OrderBookResponse struct {
@@ -48,6 +54,10 @@ func (m *Matcher) FetchOrderBook(tokenID string) (*OrderBookResponse, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("%w: %s", ErrOrderBookNotFound, string(body))
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("orderbook API returned %d: %s", resp.StatusCode, string(body))
@@ -75,6 +85,18 @@ func (m *Matcher) MatchOrder(tokenID, side string, orderPrice, orderSize float64
 	book, err := m.FetchOrderBook(tokenID)
 	if err != nil {
 		return nil, err
+	}
+
+	slog.Info("MatchOrder: orderbook fetched",
+		"token_id", tokenID, "side", side,
+		"order_price", orderPrice, "order_size", orderSize,
+		"num_bids", len(book.Bids), "num_asks", len(book.Asks))
+
+	if len(book.Asks) > 0 {
+		slog.Info("MatchOrder: best ask", "price", book.Asks[0].Price, "size", book.Asks[0].Size)
+	}
+	if len(book.Bids) > 0 {
+		slog.Info("MatchOrder: best bid", "price", book.Bids[0].Price, "size", book.Bids[0].Size)
 	}
 
 	result := &MatchResult{Remaining: orderSize}

@@ -3,10 +3,12 @@ package trading
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -84,9 +86,39 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		Outcome:       outcome,
 	}
 
-	if err := s.repo.CreateOrder(ctx, order); err != nil {
+	// Reserve funds and create order atomically:
+	// BUY  → lock (size * price) collateral
+	// SELL → lock size conditional tokens
+	tx, err := s.repo.BeginTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin order tx: %w", err)
+	}
+	txDone := false
+	defer func() {
+		if !txDone {
+			tx.Rollback(ctx)
+		}
+	}()
+
+	if order.Side == "BUY" {
+		reserveStr := fmt.Sprintf("%.6f", size*price)
+		if err := s.repo.DebitWallet(ctx, tx, userID, "COLLATERAL", "", reserveStr); err != nil {
+			return nil, fmt.Errorf("insufficient balance: %w", err)
+		}
+	} else {
+		sizeStr := fmt.Sprintf("%.6f", size)
+		if err := s.repo.DebitWallet(ctx, tx, userID, "CONDITIONAL", signed.TokenID, sizeStr); err != nil {
+			return nil, fmt.Errorf("insufficient conditional balance: %w", err)
+		}
+	}
+
+	if err := s.repo.CreateOrderTx(ctx, tx, order); err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit order: %w", err)
+	}
+	txDone = true
 
 	// Try immediate matching
 	matchResult, matchErr := s.tryMatch(ctx, order, price, size)
@@ -133,16 +165,27 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 
 // tryMatch attempts to fill an order against the Polymarket orderbook.
 func (s *Service) tryMatch(ctx context.Context, order *models.Order, price, size float64) (*MatchResult, error) {
+	slog.Info("tryMatch: attempting match",
+		"order_id", order.ID, "token_id", order.TokenID,
+		"side", order.Side, "price", price, "size", size)
+
 	result, err := s.matcher.MatchOrder(order.TokenID, order.Side, price, size)
 	if err != nil {
+		slog.Warn("tryMatch: MatchOrder failed", "order_id", order.ID, "error", err)
 		return nil, err
 	}
+
+	slog.Info("tryMatch: match result",
+		"order_id", order.ID, "filled", result.Filled,
+		"fill_price", result.FillPrice, "fill_size", result.FillSize,
+		"remaining", result.Remaining)
 
 	if !result.Filled || result.FillSize <= 0 {
 		return result, nil
 	}
 
 	if err := s.executeFill(ctx, order, result); err != nil {
+		slog.Error("tryMatch: executeFill failed", "order_id", order.ID, "error", err)
 		return nil, fmt.Errorf("execute fill: %w", err)
 	}
 
@@ -207,25 +250,26 @@ func (s *Service) executeFill(ctx context.Context, order *models.Order, result *
 		return fmt.Errorf("update order: %w", err)
 	}
 
-	// Update wallet and position
-	cost := result.FillSize * result.FillPrice
+	// Update wallet and position.
+	// Funds were already reserved when the order was placed, so we don't debit again.
+	// For BUY: reserved (size * limit_price). If fill_price < limit_price, refund the excess.
+	// For SELL: reserved the conditional tokens. Just credit the received collateral.
+	limitPrice, _ := strconv.ParseFloat(order.Price, 64)
 
 	if order.Side == "BUY" {
-		// Debit collateral, credit conditional token position
-		costStr := fmt.Sprintf("%.6f", cost)
-		if err := s.repo.DebitWallet(ctx, tx, order.UserID, "COLLATERAL", "", costStr); err != nil {
-			return fmt.Errorf("debit wallet: %w", err)
+		excess := (limitPrice - result.FillPrice) * result.FillSize
+		if excess > 0.000001 {
+			excessStr := fmt.Sprintf("%.6f", excess)
+			if err := s.repo.CreditWallet(ctx, tx, order.UserID, "COLLATERAL", "", excessStr); err != nil {
+				return fmt.Errorf("refund excess collateral: %w", err)
+			}
 		}
-		// Credit conditional token wallet
 		if err := s.repo.CreditWallet(ctx, tx, order.UserID, "CONDITIONAL", order.TokenID, fillSizeStr); err != nil {
 			return fmt.Errorf("credit conditional: %w", err)
 		}
 	} else {
-		// SELL: debit conditional token, credit collateral
-		if err := s.repo.DebitWallet(ctx, tx, order.UserID, "CONDITIONAL", order.TokenID, fillSizeStr); err != nil {
-			return fmt.Errorf("debit conditional: %w", err)
-		}
-		costStr := fmt.Sprintf("%.6f", cost)
+		// SELL: conditional tokens already reserved; credit received collateral
+		costStr := fmt.Sprintf("%.6f", result.FillSize*result.FillPrice)
 		if err := s.repo.CreditWallet(ctx, tx, order.UserID, "COLLATERAL", "", costStr); err != nil {
 			return fmt.Errorf("credit collateral: %w", err)
 		}
@@ -396,7 +440,16 @@ func (s *Service) MatchLiveOrders(ctx context.Context) error {
 	for tokenID, tokenOrders := range byToken {
 		book, err := s.matcher.FetchOrderBook(tokenID)
 		if err != nil {
-			slog.Warn("failed to fetch book for background match", "token_id", tokenID, "error", err)
+			if errors.Is(err, ErrOrderBookNotFound) {
+				n, cancelErr := s.repo.CancelLiveOrdersByTokenID(ctx, tokenID)
+				if cancelErr != nil {
+					slog.Warn("failed to cancel orders for resolved market", "token_id", tokenID, "error", cancelErr)
+				} else {
+					slog.Info("canceled orders for resolved market", "token_id", tokenID, "count", n, "orders", len(tokenOrders))
+				}
+			} else {
+				slog.Warn("failed to fetch book for background match", "token_id", tokenID, "error", err)
+			}
 			continue
 		}
 
@@ -416,11 +469,24 @@ func (s *Service) MatchLiveOrders(ctx context.Context) error {
 			matched, _ := strconv.ParseFloat(order.SizeMatched, 64)
 			remaining := origSize - matched
 
+			slog.Info("background match: checking order",
+				"order_id", order.ID, "side", order.Side,
+				"price", price, "remaining", remaining,
+				"num_bids", len(book.Bids), "num_asks", len(book.Asks))
+
 			result := matchAgainstBook(book, order.Side, price, remaining)
 			if result.Filled {
+				slog.Info("background match: fill found",
+					"order_id", order.ID, "fill_price", result.FillPrice,
+					"fill_size", result.FillSize, "remaining", result.Remaining)
 				if err := s.executeFill(ctx, order, result); err != nil {
 					slog.Warn("background fill failed", "order_id", order.ID, "error", err)
+				} else {
+					slog.Info("background match: fill executed", "order_id", order.ID)
 				}
+			} else {
+				slog.Info("background match: no fill",
+					"order_id", order.ID, "side", order.Side, "price", price)
 			}
 		}
 	}
@@ -434,6 +500,7 @@ func matchAgainstBook(book *OrderBookResponse, side string, orderPrice, orderSiz
 
 	if side == "BUY" {
 		asks := parseLevels(book.Asks)
+		sort.Slice(asks, func(i, j int) bool { return asks[i].price < asks[j].price })
 		var totalFilled, weightedPrice float64
 		for _, level := range asks {
 			if orderPrice < level.price {
@@ -456,6 +523,7 @@ func matchAgainstBook(book *OrderBookResponse, side string, orderPrice, orderSiz
 		}
 	} else {
 		bids := parseLevels(book.Bids)
+		sort.Slice(bids, func(i, j int) bool { return bids[i].price > bids[j].price })
 		var totalFilled, weightedPrice float64
 		for _, level := range bids {
 			if orderPrice > level.price {
@@ -537,22 +605,18 @@ func (s *Service) fetchAndStoreToken(ctx context.Context, tokenID string) (*mode
 	}
 
 	var markets []struct {
-		ConditionID  string `json:"condition_id"`
-		QuestionID   string `json:"question_id"`
-		Question     string `json:"question"`
-		Slug         string `json:"slug"`
-		Active       bool   `json:"active"`
-		Closed       bool   `json:"closed"`
-		NegRisk      bool   `json:"neg_risk"`
-		TickSize     string `json:"minimum_tick_size"`
-		MinOrderSize string `json:"minimum_order_size"`
-		ClobTokenIds string `json:"clobTokenIds"`
-		Outcomes     string `json:"outcomes"`
-		Tokens       []struct {
-			TokenID string `json:"token_id"`
-			Outcome string `json:"outcome"`
-			Winner  bool   `json:"winner"`
-		} `json:"tokens"`
+		ConditionID   string  `json:"conditionId"`
+		QuestionID    string  `json:"questionID"`
+		Question      string  `json:"question"`
+		Slug          string  `json:"slug"`
+		Active        bool    `json:"active"`
+		Closed        bool    `json:"closed"`
+		NegRisk       bool    `json:"negRisk"`
+		TickSize      float64 `json:"orderPriceMinTickSize"`
+		MinOrderSize  float64 `json:"orderMinSize"`
+		ClobTokenIds  string  `json:"clobTokenIds"`
+		Outcomes      string  `json:"outcomes"`
+		OutcomePrices string  `json:"outcomePrices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&markets); err != nil {
 		return nil, fmt.Errorf("decode gamma response: %w", err)
@@ -568,12 +632,12 @@ func (s *Service) fetchAndStoreToken(ctx context.Context, tokenID string) (*mode
 		marketID = m.QuestionID
 	}
 
-	tickSize := m.TickSize
-	if tickSize == "" {
+	tickSize := fmt.Sprintf("%g", m.TickSize)
+	if tickSize == "0" {
 		tickSize = "0.01"
 	}
-	minOrderSize := m.MinOrderSize
-	if minOrderSize == "" {
+	minOrderSize := fmt.Sprintf("%g", m.MinOrderSize)
+	if minOrderSize == "0" {
 		minOrderSize = "5"
 	}
 
@@ -589,41 +653,37 @@ func (s *Service) fetchAndStoreToken(ctx context.Context, tokenID string) (*mode
 		MinOrderSize: minOrderSize,
 	}
 
-	// Build outcome tokens from the tokens array if present,
-	// otherwise parse clobTokenIds + outcomes JSON strings from the API.
+	// Parse clobTokenIds, outcomes and outcomePrices to build outcome tokens.
+	// outcomePrices["1","0"] means index 0 won; ["0","1"] means index 1 won.
 	var outcomeTokens []models.OutcomeToken
-	if len(m.Tokens) > 0 {
-		for _, t := range m.Tokens {
-			var winner *bool
-			if m.Closed {
-				w := t.Winner
-				winner = &w
-			}
-			outcomeTokens = append(outcomeTokens, models.OutcomeToken{
-				TokenID:  t.TokenID,
-				MarketID: marketID,
-				Outcome:  t.Outcome,
-				Winner:   winner,
-			})
-		}
-	} else if m.ClobTokenIds != "" && m.Outcomes != "" {
+	if m.ClobTokenIds != "" {
 		var clobIDs []string
-		var outcomes []string
 		if err := json.Unmarshal([]byte(m.ClobTokenIds), &clobIDs); err != nil {
 			return nil, fmt.Errorf("parse clobTokenIds: %w", err)
 		}
-		if err := json.Unmarshal([]byte(m.Outcomes), &outcomes); err != nil {
-			return nil, fmt.Errorf("parse outcomes: %w", err)
+		var outcomes []string
+		if m.Outcomes != "" {
+			_ = json.Unmarshal([]byte(m.Outcomes), &outcomes)
+		}
+		var outcomePrices []string
+		if m.OutcomePrices != "" {
+			_ = json.Unmarshal([]byte(m.OutcomePrices), &outcomePrices)
 		}
 		for i, id := range clobIDs {
 			outcome := ""
 			if i < len(outcomes) {
 				outcome = outcomes[i]
 			}
+			var winner *bool
+			if m.Closed && i < len(outcomePrices) {
+				w := outcomePrices[i] == "1"
+				winner = &w
+			}
 			outcomeTokens = append(outcomeTokens, models.OutcomeToken{
 				TokenID:  id,
 				MarketID: marketID,
 				Outcome:  outcome,
+				Winner:   winner,
 			})
 		}
 	}

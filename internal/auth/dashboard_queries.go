@@ -117,10 +117,18 @@ func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status 
 }
 
 func (q *DashboardQueries) GetPositions(ctx context.Context, userID string) ([]map[string]any, error) {
+	// Show all positions: open (size > 0) and settled (realized_pnl != 0).
+	// Join outcome_tokens for winner status and markets for the question text.
 	rows, err := q.pool.Query(ctx,
-		`SELECT id, token_id, outcome, size::text, avg_price::text, realized_pnl::text
-		 FROM positions WHERE user_id = $1 AND size > 0
-		 ORDER BY updated_at DESC`, userID)
+		`SELECT p.id, p.token_id, p.outcome, p.size::text, p.avg_price::text, p.realized_pnl::text,
+		        ot.winner, COALESCE(m.question, '') AS question,
+		        p.size > 0 AS is_open
+		 FROM positions p
+		 LEFT JOIN outcome_tokens ot ON p.token_id = ot.token_id
+		 LEFT JOIN markets m ON p.market_id = m.id
+		 WHERE p.user_id = $1
+		   AND (p.size > 0 OR ABS(p.realized_pnl) > 0.000001)
+		 ORDER BY p.updated_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -128,13 +136,16 @@ func (q *DashboardQueries) GetPositions(ctx context.Context, userID string) ([]m
 
 	var positions []map[string]any
 	for rows.Next() {
-		var id, tokenID, outcome, size, avgPrice, rpnl string
-		if err := rows.Scan(&id, &tokenID, &outcome, &size, &avgPrice, &rpnl); err != nil {
+		var id, tokenID, outcome, size, avgPrice, rpnl, question string
+		var winner *bool
+		var isOpen bool
+		if err := rows.Scan(&id, &tokenID, &outcome, &size, &avgPrice, &rpnl, &winner, &question, &isOpen); err != nil {
 			return nil, err
 		}
 		positions = append(positions, map[string]any{
 			"id": id, "token_id": tokenID, "outcome": outcome,
 			"size": size, "avg_price": avgPrice, "realized_pnl": rpnl,
+			"winner": winner, "question": question, "is_open": isOpen,
 		})
 	}
 	if positions == nil {
@@ -149,8 +160,19 @@ func (q *DashboardQueries) GetTrades(ctx context.Context, userID string, limit, 
 		return nil, 0, err
 	}
 
-	query := `SELECT id, asset_id, side, price, size, status, match_time
-		 FROM trades WHERE user_id = $1 ORDER BY match_time DESC`
+	// Join with outcome_tokens to show whether the bet won or lost.
+	query := `SELECT t.id, t.asset_id, t.side, t.price, t.size, t.status, t.match_time,
+		         t.outcome, ot.winner,
+		         CASE WHEN ot.winner IS NOT NULL AND t.side = 'BUY' THEN
+		             CASE WHEN ot.winner THEN
+		                 t.size::numeric * (1 - t.price::numeric)
+		             ELSE
+		                 -(t.size::numeric * t.price::numeric)
+		             END
+		         END AS profit_loss
+		  FROM trades t
+		  LEFT JOIN outcome_tokens ot ON t.asset_id = ot.token_id
+		  WHERE t.user_id = $1 ORDER BY t.match_time DESC`
 	if limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", limit)
 	}
@@ -167,19 +189,75 @@ func (q *DashboardQueries) GetTrades(ctx context.Context, userID string, limit, 
 	var trades []map[string]any
 	for rows.Next() {
 		var id, assetID, side, price, size, status string
+		var outcome string
 		var matchTime any
-		if err := rows.Scan(&id, &assetID, &side, &price, &size, &status, &matchTime); err != nil {
+		var winner *bool
+		var profitLoss *float64
+		if err := rows.Scan(&id, &assetID, &side, &price, &size, &status, &matchTime,
+			&outcome, &winner, &profitLoss); err != nil {
 			return nil, 0, err
 		}
 		trades = append(trades, map[string]any{
 			"id": id, "asset_id": assetID, "side": side, "price": price,
 			"size": size, "status": status, "match_time": matchTime,
+			"outcome": outcome, "winner": winner, "profit_loss": profitLoss,
 		})
 	}
 	if trades == nil {
 		trades = []map[string]any{}
 	}
 	return trades, total, nil
+}
+
+// GetStats returns P&L and bet statistics for a user across time periods.
+func (q *DashboardQueries) GetStats(ctx context.Context, userID string) (map[string]any, error) {
+	var totalPnl, todayPnl, monthPnl float64
+	err := q.pool.QueryRow(ctx,
+		`SELECT
+		     COALESCE(SUM(realized_pnl), 0),
+		     COALESCE(SUM(CASE WHEN DATE(updated_at AT TIME ZONE 'UTC') = CURRENT_DATE THEN realized_pnl ELSE 0 END), 0),
+		     COALESCE(SUM(CASE WHEN DATE_TRUNC('month', updated_at) = DATE_TRUNC('month', NOW()) THEN realized_pnl ELSE 0 END), 0)
+		 FROM positions
+		 WHERE user_id = $1 AND ABS(realized_pnl) > 0.000001`,
+		userID,
+	).Scan(&totalPnl, &todayPnl, &monthPnl)
+	if err != nil {
+		return nil, fmt.Errorf("get pnl stats: %w", err)
+	}
+
+	var totalBets, wonBets, lostBets int
+	err = q.pool.QueryRow(ctx,
+		`SELECT
+		     COUNT(*) FILTER (WHERE t.side = 'BUY'),
+		     COUNT(*) FILTER (WHERE t.side = 'BUY' AND ot.winner = true),
+		     COUNT(*) FILTER (WHERE t.side = 'BUY' AND ot.winner = false)
+		 FROM trades t
+		 LEFT JOIN outcome_tokens ot ON t.asset_id = ot.token_id
+		 WHERE t.user_id = $1`,
+		userID,
+	).Scan(&totalBets, &wonBets, &lostBets)
+	if err != nil {
+		return nil, fmt.Errorf("get bet stats: %w", err)
+	}
+
+	var currentBalance string
+	if err := q.pool.QueryRow(ctx,
+		`SELECT COALESCE(balance::text, '0') FROM wallets
+		 WHERE user_id = $1 AND asset_type = 'COLLATERAL' AND token_id = ''`,
+		userID,
+	).Scan(&currentBalance); err != nil {
+		currentBalance = "0"
+	}
+
+	return map[string]any{
+		"total_pnl":       totalPnl,
+		"today_pnl":       todayPnl,
+		"month_pnl":       monthPnl,
+		"total_bets":      totalBets,
+		"won_bets":        wonBets,
+		"lost_bets":       lostBets,
+		"current_balance": currentBalance,
+	}, nil
 }
 
 // Unused import guard

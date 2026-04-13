@@ -101,6 +101,9 @@ func main() {
 		},
 	})
 
+	// Dashboard stats endpoint (JWT-protected)
+	r.With(auth.JWTMiddleware(authSvc)).Get("/api/stats", dashboardHandler.GetStats)
+
 	// Dashboard API key management (JWT-protected)
 	r.Route("/api/api-keys", func(r chi.Router) {
 		r.Use(auth.JWTMiddleware(authSvc))

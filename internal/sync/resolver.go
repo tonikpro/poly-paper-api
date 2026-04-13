@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -52,7 +51,13 @@ func (r *Resolver) SettleMarket(ctx context.Context, marketID string) error {
 	}
 	tokenRows.Close()
 
+	slog.Info("resolver: tokens for market", "market_id", marketID, "count", len(tokens))
+	for _, t := range tokens {
+		slog.Info("resolver: token info", "token_id", t.tokenID, "outcome", t.outcome, "winner", t.winner)
+	}
+
 	if len(tokens) == 0 {
+		slog.Warn("resolver: no tokens found for market", "market_id", marketID)
 		return nil
 	}
 
@@ -63,6 +68,7 @@ func (r *Resolver) SettleMarket(ctx context.Context, marketID string) error {
 			winnerMap[t.tokenID] = *t.winner
 		}
 	}
+	slog.Info("resolver: winner map", "market_id", marketID, "winners_known", len(winnerMap))
 
 	// Lock and process all positions for tokens in this market
 	posRows, err := tx.Query(ctx,
@@ -87,23 +93,22 @@ func (r *Resolver) SettleMarket(ctx context.Context, marketID string) error {
 	var positions []positionInfo
 	for posRows.Next() {
 		var p positionInfo
-		var sizeStr, avgPriceStr, rpnlStr string
-		if err := posRows.Scan(&p.id, &p.userID, &p.tokenID, &sizeStr, &avgPriceStr, &rpnlStr); err != nil {
+		if err := posRows.Scan(&p.id, &p.userID, &p.tokenID, &p.size, &p.avgPrice, &p.realizedPnl); err != nil {
 			posRows.Close()
 			return fmt.Errorf("scan position: %w", err)
 		}
-		p.size, _ = strconv.ParseFloat(sizeStr, 64)
-		p.avgPrice, _ = strconv.ParseFloat(avgPriceStr, 64)
-		p.realizedPnl, _ = strconv.ParseFloat(rpnlStr, 64)
 		positions = append(positions, p)
 	}
 	posRows.Close()
+
+	slog.Info("resolver: positions to settle", "market_id", marketID, "count", len(positions))
 
 	// Settle each position
 	for _, pos := range positions {
 		winner, ok := winnerMap[pos.tokenID]
 		if !ok {
-			slog.Warn("resolver: no winner info for token", "token_id", pos.tokenID)
+			slog.Warn("resolver: no winner info for token — skipping position",
+				"token_id", pos.tokenID, "user_id", pos.userID, "size", pos.size)
 			continue
 		}
 
@@ -158,6 +163,45 @@ func (r *Resolver) SettleMarket(ctx context.Context, marketID string) error {
 		if err != nil {
 			return fmt.Errorf("close position: %w", err)
 		}
+	}
+
+	// Refund reservations for LIVE orders before canceling them.
+	// BUY orders: refund (original_size - size_matched) * price to COLLATERAL wallet.
+	_, err = tx.Exec(ctx,
+		`UPDATE wallets w
+		 SET balance   = w.balance   + sub.refund,
+		     allowance = w.allowance + sub.refund,
+		     updated_at = now()
+		 FROM (
+		     SELECT user_id, SUM((original_size - size_matched) * price) AS refund
+		     FROM orders
+		     WHERE token_id = ANY($1) AND status = 'LIVE' AND side = 'BUY'
+		       AND original_size - size_matched > 0.000001
+		     GROUP BY user_id
+		 ) sub
+		 WHERE w.user_id = sub.user_id AND w.asset_type = 'COLLATERAL' AND w.token_id = ''`,
+		tokenIDs)
+	if err != nil {
+		return fmt.Errorf("refund buy order reservations: %w", err)
+	}
+
+	// SELL orders: refund (original_size - size_matched) conditional tokens back.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO wallets (user_id, asset_type, token_id, balance, allowance)
+		 SELECT user_id, 'CONDITIONAL', token_id,
+		        SUM(original_size - size_matched),
+		        SUM(original_size - size_matched)
+		 FROM orders
+		 WHERE token_id = ANY($1) AND status = 'LIVE' AND side = 'SELL'
+		   AND original_size - size_matched > 0.000001
+		 GROUP BY user_id, token_id
+		 ON CONFLICT (user_id, asset_type, token_id) DO UPDATE SET
+		     balance   = wallets.balance   + EXCLUDED.balance,
+		     allowance = wallets.allowance + EXCLUDED.allowance,
+		     updated_at = now()`,
+		tokenIDs)
+	if err != nil {
+		return fmt.Errorf("refund sell order reservations: %w", err)
 	}
 
 	// Cancel all remaining LIVE orders for tokens in this market

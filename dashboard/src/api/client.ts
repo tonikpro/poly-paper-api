@@ -46,6 +46,9 @@ export const getPositions = () => api.get('/api/positions');
 export const getTrades = (params?: { limit?: number; offset?: number }) =>
   api.get('/api/trades', { params });
 
+// Stats
+export const getStats = () => api.get('/api/stats');
+
 // Eth address
 export const getEthAddress = () => api.get('/api/eth-address');
 

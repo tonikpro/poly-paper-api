@@ -3,7 +3,9 @@
     "allow": [
       "Bash(npm run:*)",
       "Bash(go build:*)",
-      "Bash(go test:*)"
+      "Bash(go test:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(npx tsc:*)"
     ]
   }
 }

@@ -3,6 +3,7 @@ package trading
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -21,25 +22,38 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 // --- Orders ---
 
 func (r *Repository) CreateOrder(ctx context.Context, o *models.Order) error {
-	// Pass NULL instead of empty string for outcome to satisfy CHECK constraint
-	var outcome interface{} = o.Outcome
-	if o.Outcome == "" {
-		outcome = nil
-	}
+	return r.createOrderRow(r.pool.QueryRow(ctx, insertOrderSQL(o), insertOrderArgs(o)...), o)
+}
 
-	err := r.pool.QueryRow(ctx,
-		`INSERT INTO orders (user_id, salt, maker, signer, taker, token_id,
+func (r *Repository) CreateOrderTx(ctx context.Context, tx pgx.Tx, o *models.Order) error {
+	return r.createOrderRow(tx.QueryRow(ctx, insertOrderSQL(o), insertOrderArgs(o)...), o)
+}
+
+func insertOrderSQL(o *models.Order) string {
+	_ = o
+	return `INSERT INTO orders (user_id, salt, maker, signer, taker, token_id,
 			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
 			signature_type, signature, price, original_size, size_matched, status,
 			order_type, post_only, owner, market, asset_id, outcome, associate_trades)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
-		 RETURNING id, created_at, updated_at`,
+		 RETURNING id, created_at, updated_at`
+}
+
+func insertOrderArgs(o *models.Order) []any {
+	var outcome interface{} = o.Outcome
+	if o.Outcome == "" {
+		outcome = nil
+	}
+	return []any{
 		o.UserID, o.Salt, o.Maker, o.Signer, o.Taker, o.TokenID,
 		o.MakerAmount, o.TakerAmount, o.Side, o.Expiration, o.Nonce, o.FeeRateBps,
 		o.SignatureType, o.Signature, o.Price, o.OriginalSize, o.SizeMatched, o.Status,
 		o.OrderType, o.PostOnly, o.Owner, o.Market, o.AssetID, outcome, "[]",
-	).Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt)
-	if err != nil {
+	}
+}
+
+func (r *Repository) createOrderRow(row pgx.Row, o *models.Order) error {
+	if err := row.Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt); err != nil {
 		return fmt.Errorf("create order: %w", err)
 	}
 	return nil
@@ -143,26 +157,45 @@ func (r *Repository) GetAllOrdersByUserID(ctx context.Context, userID string) ([
 }
 
 func (r *Repository) CancelOrder(ctx context.Context, orderID, userID string) (bool, error) {
-	var canceledID string
-	err := r.pool.QueryRow(ctx,
-		`UPDATE orders
-		 SET status = 'CANCELED', updated_at = now()
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin cancel tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var side, tokenID string
+	var origSize, sizeMatched, price float64
+	err = tx.QueryRow(ctx,
+		`UPDATE orders SET status = 'CANCELED', updated_at = now()
 		 WHERE id = $1 AND user_id = $2 AND status = 'LIVE'
-		 RETURNING id`,
+		 RETURNING side, original_size::float8, size_matched::float8, price::float8, token_id`,
 		orderID, userID,
-	).Scan(&canceledID)
+	).Scan(&side, &origSize, &sizeMatched, &price, &tokenID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return false, nil
 		}
 		return false, fmt.Errorf("cancel order: %w", err)
 	}
+
+	if err := refundOrderReservation(ctx, tx, userID, side, tokenID, origSize-sizeMatched, price); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit cancel: %w", err)
+	}
 	return true, nil
 }
 
 func (r *Repository) CancelOrdersByFilter(ctx context.Context, userID string, market, assetID *string) ([]string, error) {
-	query := `UPDATE orders
-		SET status = 'CANCELED', updated_at = now()
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin cancel tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	query := `UPDATE orders SET status = 'CANCELED', updated_at = now()
 		WHERE user_id = $1 AND status = 'LIVE'`
 	args := []any{userID}
 	argIdx := 2
@@ -177,32 +210,131 @@ func (r *Repository) CancelOrdersByFilter(ctx context.Context, userID string, ma
 		args = append(args, *assetID)
 		argIdx++
 	}
-	query += " RETURNING id"
+	query += " RETURNING id, side, original_size::float8, size_matched::float8, price::float8, token_id"
 
-	rows, err := r.pool.Query(ctx, query, args...)
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("cancel filtered orders: %w", err)
 	}
-	defer rows.Close()
 
+	type cancelInfo struct {
+		id, side, tokenID    string
+		origSize, matched, price float64
+	}
+	var infos []cancelInfo
 	var canceled []string
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan canceled order id: %w", err)
+		var ci cancelInfo
+		if err := rows.Scan(&ci.id, &ci.side, &ci.origSize, &ci.matched, &ci.price, &ci.tokenID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan canceled order: %w", err)
 		}
-		canceled = append(canceled, id)
+		canceled = append(canceled, ci.id)
+		infos = append(infos, ci)
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate canceled order ids: %w", err)
+		return nil, fmt.Errorf("iterate canceled orders: %w", err)
+	}
+
+	for _, ci := range infos {
+		if err := refundOrderReservation(ctx, tx, userID, ci.side, ci.tokenID, ci.origSize-ci.matched, ci.price); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit cancel: %w", err)
 	}
 	return canceled, nil
+}
+
+// refundOrderReservation credits back the reserved funds for the unfilled portion of a canceled order.
+func refundOrderReservation(ctx context.Context, tx pgx.Tx, userID, side, tokenID string, remaining, price float64) error {
+	if remaining < 0.000001 {
+		return nil
+	}
+	if side == "BUY" {
+		refund := fmt.Sprintf("%.6f", remaining*price)
+		_, err := tx.Exec(ctx,
+			`UPDATE wallets SET balance = balance + $2::numeric, allowance = allowance + $2::numeric, updated_at = now()
+			 WHERE user_id = $1 AND asset_type = 'COLLATERAL' AND token_id = ''`,
+			userID, refund)
+		if err != nil {
+			return fmt.Errorf("refund collateral: %w", err)
+		}
+	} else {
+		refund := fmt.Sprintf("%.6f", remaining)
+		_, err := tx.Exec(ctx,
+			`INSERT INTO wallets (user_id, asset_type, token_id, balance, allowance)
+			 VALUES ($1, 'CONDITIONAL', $2, $3::numeric, $3::numeric)
+			 ON CONFLICT (user_id, asset_type, token_id) DO UPDATE SET
+				balance = wallets.balance + $3::numeric,
+				allowance = wallets.allowance + $3::numeric,
+				updated_at = now()`,
+			userID, tokenID, refund)
+		if err != nil {
+			return fmt.Errorf("refund conditional: %w", err)
+		}
+	}
+	return nil
+}
+
+// CancelLiveOrdersByTokenID cancels all LIVE orders for a given tokenID across all users
+// and refunds their reservations. Used when the market no longer has an orderbook.
+func (r *Repository) CancelLiveOrdersByTokenID(ctx context.Context, tokenID string) (int, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin cancel by token tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx,
+		`UPDATE orders SET status = 'CANCELED', updated_at = now()
+		 WHERE token_id = $1 AND status = 'LIVE'
+		 RETURNING user_id, side, original_size::float8, size_matched::float8, price::float8`,
+		tokenID)
+	if err != nil {
+		return 0, fmt.Errorf("cancel orders by token: %w", err)
+	}
+
+	type cancelInfo struct {
+		userID   string
+		side     string
+		origSize float64
+		matched  float64
+		price    float64
+	}
+	var infos []cancelInfo
+	for rows.Next() {
+		var ci cancelInfo
+		if err := rows.Scan(&ci.userID, &ci.side, &ci.origSize, &ci.matched, &ci.price); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan canceled order: %w", err)
+		}
+		infos = append(infos, ci)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate canceled orders: %w", err)
+	}
+
+	for _, ci := range infos {
+		if err := refundOrderReservation(ctx, tx, ci.userID, ci.side, tokenID, ci.origSize-ci.matched, ci.price); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit cancel by token: %w", err)
+	}
+	return len(infos), nil
 }
 
 func (r *Repository) UpdateOrderFill(ctx context.Context, tx pgx.Tx, orderID string, sizeMatched string, status string, tradeID string) error {
 	_, err := tx.Exec(ctx,
 		`UPDATE orders SET size_matched = $2, status = $3, updated_at = now(),
-			associate_trades = associate_trades || to_jsonb($4::text)
+			associate_trades = associate_trades || jsonb_build_array($4::text)
 		 WHERE id = $1`, orderID, sizeMatched, status, tradeID)
 	return err
 }
@@ -210,6 +342,7 @@ func (r *Repository) UpdateOrderFill(ctx context.Context, tx pgx.Tx, orderID str
 // --- Trades ---
 
 func (r *Repository) CreateTrade(ctx context.Context, tx pgx.Tx, t *models.Trade) error {
+	var matchTime, lastUpdate time.Time
 	err := tx.QueryRow(ctx,
 		`INSERT INTO trades (taker_order_id, user_id, market, asset_id, side, size,
 			fee_rate_bps, price, status, outcome, owner, maker_address, trader_side, fill_key)
@@ -219,10 +352,12 @@ func (r *Repository) CreateTrade(ctx context.Context, tx pgx.Tx, t *models.Trade
 		t.TakerOrderID, t.UserID, t.Market, t.AssetID, t.Side, t.Size,
 		t.FeeRateBps, t.Price, t.Status, t.Outcome, t.Owner, t.MakerAddress,
 		t.TraderSide, t.FillKey,
-	).Scan(&t.ID, &t.MatchTime, &t.LastUpdate)
+	).Scan(&t.ID, &matchTime, &lastUpdate)
 	if err != nil {
 		return fmt.Errorf("create trade: %w", err)
 	}
+	t.MatchTime = matchTime.Format(time.RFC3339)
+	t.LastUpdate = lastUpdate.Format(time.RFC3339)
 	return nil
 }
 
@@ -260,14 +395,17 @@ func (r *Repository) GetTradesByUserID(ctx context.Context, userID string, marke
 	var trades []models.Trade
 	for rows.Next() {
 		var t models.Trade
+		var matchTime, lastUpdate time.Time
 		if err := rows.Scan(
 			&t.ID, &t.TakerOrderID, &t.UserID, &t.Market, &t.AssetID, &t.Side,
-			&t.Size, &t.FeeRateBps, &t.Price, &t.Status, &t.MatchTime, &t.LastUpdate,
+			&t.Size, &t.FeeRateBps, &t.Price, &t.Status, &matchTime, &lastUpdate,
 			&t.Outcome, &t.Owner, &t.MakerAddress, &t.BucketIndex, &t.TransactionHash,
 			&t.TraderSide, &t.MakerOrders,
 		); err != nil {
 			return nil, "", fmt.Errorf("scan trade: %w", err)
 		}
+		t.MatchTime = matchTime.Format(time.RFC3339)
+		t.LastUpdate = lastUpdate.Format(time.RFC3339)
 		trades = append(trades, t)
 	}
 

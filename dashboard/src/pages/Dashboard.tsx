@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react';
-import { getWallet, getOrders, getPositions, getTrades } from '../api/client';
+import { getWallet, getOrders, getPositions, getTrades, getStats } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+
+interface Stats {
+  total_pnl: number;
+  today_pnl: number;
+  month_pnl: number;
+  total_bets: number;
+  won_bets: number;
+  lost_bets: number;
+}
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -8,22 +17,46 @@ export default function Dashboard() {
   const [orderCount, setOrderCount] = useState(0);
   const [positionCount, setPositionCount] = useState(0);
   const [tradeCount, setTradeCount] = useState(0);
+  const [stats, setStats] = useState<Stats | null>(null);
 
   useEffect(() => {
     getWallet().then(r => setBalance(r.data.balance || '0')).catch(() => {});
     getOrders({ limit: 1 }).then(r => setOrderCount(r.data.total || 0)).catch(() => {});
-    getPositions().then(r => setPositionCount(r.data.positions?.length || 0)).catch(() => {});
+    getPositions().then(r => setPositionCount((r.data.positions || []).filter((p: any) => p.is_open).length)).catch(() => {});
     getTrades({ limit: 1 }).then(r => setTradeCount(r.data.total || 0)).catch(() => {});
+    getStats().then(r => setStats(r.data)).catch(() => {});
   }, []);
+
+  const winRate = stats && stats.total_bets > 0
+    ? Math.round((stats.won_bets / stats.total_bets) * 100)
+    : null;
 
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
         <Card title="Balance" value={`$${balance}`} />
         <Card title="Open Orders" value={String(orderCount)} />
-        <Card title="Positions" value={String(positionCount)} />
+        <Card title="Open Positions" value={String(positionCount)} />
         <Card title="Total Trades" value={String(tradeCount)} />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <PnlCard title="Total P&L" value={stats?.total_pnl} />
+        <PnlCard title="This Month" value={stats?.month_pnl} />
+        <PnlCard title="Today" value={stats?.today_pnl} />
+        <div className="bg-white rounded-lg shadow p-6">
+          <div className="text-sm text-gray-500">Win Rate</div>
+          <div className="text-2xl font-bold mt-1">
+            {winRate !== null ? `${winRate}%` : '--'}
+          </div>
+          {stats && (
+            <div className="text-xs text-gray-400 mt-1">
+              {stats.won_bets}W / {stats.lost_bets}L / {stats.total_bets - stats.won_bets - stats.lost_bets} pending
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded-lg shadow p-6">
@@ -46,6 +79,19 @@ function Card({ title, value }: { title: string; value: string }) {
     <div className="bg-white rounded-lg shadow p-6">
       <div className="text-sm text-gray-500">{title}</div>
       <div className="text-2xl font-bold mt-1">{value}</div>
+    </div>
+  );
+}
+
+function PnlCard({ title, value }: { title: string; value?: number }) {
+  const isPositive = value !== undefined && value >= 0;
+  const formatted = value !== undefined ? `${isPositive ? '+' : ''}$${value.toFixed(2)}` : '--';
+  return (
+    <div className="bg-white rounded-lg shadow p-6">
+      <div className="text-sm text-gray-500">{title}</div>
+      <div className={`text-2xl font-bold mt-1 ${value === undefined ? 'text-gray-800' : isPositive ? 'text-green-600' : 'text-red-600'}`}>
+        {formatted}
+      </div>
     </div>
   );
 }
