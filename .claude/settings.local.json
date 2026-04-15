@@ -22,7 +22,19 @@
       "Bash(git status:*)",
       "Bash(git log:*)",
       "Bash(git diff:*)",
-      "Bash(git tag:*)"
+      "Bash(git tag:*)",
+      "Bash(make docker-up *)",
+      "Bash(timeout 15 make run)",
+      "Bash(timeout 10 go run ./cmd/server)",
+      "Bash(tee /tmp/server.log)",
+      "Bash(go run *)",
+      "Bash(docker exec *)",
+      "Bash(make test *)",
+      "Bash(git rm *)",
+      "Bash(git ls-tree *)",
+      "Bash(npm --prefix dashboard list react-router-dom)",
+      "Bash(npm --prefix dashboard run build)",
+      "Bash(npm --prefix dashboard run type-check)"
     ]
   }
 }

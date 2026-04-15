@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react';
 import { getEthAddress, getApiKeys, createApiKey, deleteApiKey } from '../api/client';
 
+interface ApiKeyRecord {
+  apiKey: string;
+  secret: string;
+  passphrase: string;
+  created_at: string;
+}
+
 interface CreatedKey {
   apiKey: string;
   secret: string;
@@ -11,7 +18,7 @@ export default function ApiKeys() {
   const [ethAddress, setEthAddress] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [showPrivateKey, setShowPrivateKey] = useState(false);
-  const [apiKeysList, setApiKeysList] = useState<string[]>([]);
+  const [apiKeysList, setApiKeysList] = useState<ApiKeyRecord[]>([]);
   const [createdKey, setCreatedKey] = useState<CreatedKey | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -27,7 +34,7 @@ export default function ApiKeys() {
 
   function loadKeys() {
     getApiKeys()
-      .then(r => setApiKeysList(r.data.apiKeys || []))
+      .then(r => setApiKeysList(r.data.apiKeys as ApiKeyRecord[] || []))
       .catch(() => {});
   }
 
@@ -112,11 +119,11 @@ export default function ApiKeys() {
               </tr>
             </thead>
             <tbody>
-              {apiKeysList.map(key => (
-                <tr key={key} className="border-b">
-                  <td className="py-2 font-mono text-sm">{key.slice(0, 16)}...{key.slice(-8)}</td>
+              {apiKeysList.map(k => (
+                <tr key={k.apiKey} className="border-b">
+                  <td className="py-2 font-mono text-sm">{k.apiKey.slice(0, 16)}...{k.apiKey.slice(-8)}</td>
                   <td className="py-2 text-right">
-                    <button onClick={() => handleDelete(key)}
+                    <button onClick={() => handleDelete(k.apiKey)}
                       className="text-red-600 hover:underline text-sm">Revoke</button>
                   </td>
                 </tr>

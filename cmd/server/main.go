@@ -53,8 +53,7 @@ func main() {
 	authSvc := auth.NewService(authRepo, cfg)
 
 	tradingRepo := trading.NewRepository(pool)
-	matcher := trading.NewMatcher(cfg.PolymarketCLOBURL)
-	tradingSvc := trading.NewService(tradingRepo, matcher, cfg.PolymarketGammaURL)
+	tradingSvc := trading.NewService(tradingRepo, cfg.PolymarketGammaURL)
 
 	// Handlers
 	dashboardQueries := auth.NewDashboardQueries(pool)
@@ -122,8 +121,17 @@ func main() {
 	})
 	r.Mount("/clob", clobRouter)
 
-	// Start background match worker (checks live orders every 10s)
-	trading.StartMatchWorker(ctx, tradingSvc, 10*time.Second)
+	// Serve dashboard SPA — any path not matched above falls through to index.html
+	dashboardDist := http.Dir("dashboard/dist")
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		f, err := dashboardDist.Open(r.URL.Path)
+		if err == nil {
+			f.Close()
+			http.FileServer(dashboardDist).ServeHTTP(w, r)
+			return
+		}
+		http.ServeFile(w, r, "dashboard/dist/index.html")
+	})
 
 	// Start market sync poller (checks resolutions every 60s)
 	resolver := polysync.NewResolver(pool)

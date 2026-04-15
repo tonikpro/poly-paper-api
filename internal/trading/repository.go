@@ -29,13 +29,12 @@ func (r *Repository) CreateOrderTx(ctx context.Context, tx pgx.Tx, o *models.Ord
 	return r.createOrderRow(tx.QueryRow(ctx, insertOrderSQL(o), insertOrderArgs(o)...), o)
 }
 
-func insertOrderSQL(o *models.Order) string {
-	_ = o
+func insertOrderSQL(_ *models.Order) string {
 	return `INSERT INTO orders (user_id, salt, maker, signer, taker, token_id,
 			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
 			signature_type, signature, price, original_size, size_matched, status,
-			order_type, post_only, owner, market, asset_id, outcome, associate_trades)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+			order_type, post_only, owner, market, asset_id, outcome)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 		 RETURNING id, created_at, updated_at`
 }
 
@@ -48,7 +47,7 @@ func insertOrderArgs(o *models.Order) []any {
 		o.UserID, o.Salt, o.Maker, o.Signer, o.Taker, o.TokenID,
 		o.MakerAmount, o.TakerAmount, o.Side, o.Expiration, o.Nonce, o.FeeRateBps,
 		o.SignatureType, o.Signature, o.Price, o.OriginalSize, o.SizeMatched, o.Status,
-		o.OrderType, o.PostOnly, o.Owner, o.Market, o.AssetID, outcome, "[]",
+		o.OrderType, o.PostOnly, o.Owner, o.Market, o.AssetID, outcome,
 	}
 }
 
@@ -64,41 +63,16 @@ func (r *Repository) GetOrderByID(ctx context.Context, orderID string) (*models.
 		`SELECT id, user_id, salt, maker, signer, taker, token_id,
 			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
 			signature_type, signature, price, original_size, size_matched, status,
-			order_type, post_only, owner, market, asset_id, outcome, associate_trades,
+			order_type, post_only, owner, market, asset_id, outcome,
 			created_at, updated_at
 		 FROM orders WHERE id = $1`, orderID))
-}
-
-func (r *Repository) GetOrderByIDForUpdate(ctx context.Context, tx pgx.Tx, orderID string) (*models.Order, error) {
-	return r.scanOrder(tx.QueryRow(ctx,
-		`SELECT id, user_id, salt, maker, signer, taker, token_id,
-			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
-			signature_type, signature, price, original_size, size_matched, status,
-			order_type, post_only, owner, market, asset_id, outcome, associate_trades,
-			created_at, updated_at
-		 FROM orders WHERE id = $1 FOR UPDATE`, orderID))
-}
-
-func (r *Repository) GetLiveOrdersForUpdate(ctx context.Context, tx pgx.Tx) ([]*models.Order, error) {
-	rows, err := tx.Query(ctx,
-		`SELECT id, user_id, salt, maker, signer, taker, token_id,
-			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
-			signature_type, signature, price, original_size, size_matched, status,
-			order_type, post_only, owner, market, asset_id, outcome, associate_trades,
-			created_at, updated_at
-		 FROM orders WHERE status = 'LIVE' FOR UPDATE SKIP LOCKED`)
-	if err != nil {
-		return nil, fmt.Errorf("get live orders: %w", err)
-	}
-	defer rows.Close()
-	return r.scanOrders(rows)
 }
 
 func (r *Repository) GetOrdersByUserID(ctx context.Context, userID string, market, assetID, cursor *string) ([]*models.Order, string, error) {
 	query := `SELECT id, user_id, salt, maker, signer, taker, token_id,
 			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
 			signature_type, signature, price, original_size, size_matched, status,
-			order_type, post_only, owner, market, asset_id, outcome, associate_trades,
+			order_type, post_only, owner, market, asset_id, outcome,
 			created_at, updated_at
 		 FROM orders WHERE user_id = $1 AND status = 'LIVE'`
 	args := []any{userID}
@@ -117,7 +91,6 @@ func (r *Repository) GetOrdersByUserID(ctx context.Context, userID string, marke
 	if cursor != nil && *cursor != "" {
 		query += fmt.Sprintf(" AND id < $%d", argIdx)
 		args = append(args, *cursor)
-		argIdx++
 	}
 	query += " ORDER BY created_at DESC LIMIT 101"
 
@@ -145,7 +118,7 @@ func (r *Repository) GetAllOrdersByUserID(ctx context.Context, userID string) ([
 		`SELECT id, user_id, salt, maker, signer, taker, token_id,
 			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
 			signature_type, signature, price, original_size, size_matched, status,
-			order_type, post_only, owner, market, asset_id, outcome, associate_trades,
+			order_type, post_only, owner, market, asset_id, outcome,
 			created_at, updated_at
 		 FROM orders WHERE user_id = $1 AND status = 'LIVE'
 		 ORDER BY created_at DESC`, userID)
@@ -280,91 +253,35 @@ func refundOrderReservation(ctx context.Context, tx pgx.Tx, userID, side, tokenI
 	return nil
 }
 
-// CancelLiveOrdersByTokenID cancels all LIVE orders for a given tokenID across all users
-// and refunds their reservations. Used when the market no longer has an orderbook.
-func (r *Repository) CancelLiveOrdersByTokenID(ctx context.Context, tokenID string) (int, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("begin cancel by token tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	rows, err := tx.Query(ctx,
-		`UPDATE orders SET status = 'CANCELED', updated_at = now()
-		 WHERE token_id = $1 AND status = 'LIVE'
-		 RETURNING user_id, side, original_size::float8, size_matched::float8, price::float8`,
-		tokenID)
-	if err != nil {
-		return 0, fmt.Errorf("cancel orders by token: %w", err)
-	}
-
-	type cancelInfo struct {
-		userID   string
-		side     string
-		origSize float64
-		matched  float64
-		price    float64
-	}
-	var infos []cancelInfo
-	for rows.Next() {
-		var ci cancelInfo
-		if err := rows.Scan(&ci.userID, &ci.side, &ci.origSize, &ci.matched, &ci.price); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("scan canceled order: %w", err)
-		}
-		infos = append(infos, ci)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate canceled orders: %w", err)
-	}
-
-	for _, ci := range infos {
-		if err := refundOrderReservation(ctx, tx, ci.userID, ci.side, tokenID, ci.origSize-ci.matched, ci.price); err != nil {
-			return 0, err
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit cancel by token: %w", err)
-	}
-	return len(infos), nil
-}
-
-func (r *Repository) UpdateOrderFill(ctx context.Context, tx pgx.Tx, orderID string, sizeMatched string, status string, tradeID string) error {
-	_, err := tx.Exec(ctx,
-		`UPDATE orders SET size_matched = $2, status = $3, updated_at = now(),
-			associate_trades = associate_trades || jsonb_build_array($4::text)
-		 WHERE id = $1`, orderID, sizeMatched, status, tradeID)
-	return err
-}
-
 // --- Trades ---
 
 func (r *Repository) CreateTrade(ctx context.Context, tx pgx.Tx, t *models.Trade) error {
 	var matchTime, lastUpdate time.Time
 	err := tx.QueryRow(ctx,
 		`INSERT INTO trades (taker_order_id, user_id, market, asset_id, side, size,
-			fee_rate_bps, price, status, outcome, owner, maker_address, trader_side, fill_key)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-		 ON CONFLICT (fill_key) DO NOTHING
+			fee_rate_bps, price, status, outcome, owner, maker_address)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		 RETURNING id, match_time, last_update`,
 		t.TakerOrderID, t.UserID, t.Market, t.AssetID, t.Side, t.Size,
 		t.FeeRateBps, t.Price, t.Status, t.Outcome, t.Owner, t.MakerAddress,
-		t.TraderSide, t.FillKey,
 	).Scan(&t.ID, &matchTime, &lastUpdate)
 	if err != nil {
 		return fmt.Errorf("create trade: %w", err)
 	}
 	t.MatchTime = matchTime.Format(time.RFC3339)
 	t.LastUpdate = lastUpdate.Format(time.RFC3339)
+	// Set API-compatible defaults for fields no longer stored in DB
+	t.TraderSide = "TAKER"
+	t.TransactionHash = ""
+	t.BucketIndex = 0
+	t.MakerOrders = []byte("[]")
 	return nil
 }
 
 func (r *Repository) GetTradesByUserID(ctx context.Context, userID string, market, assetID, cursor *string) ([]models.Trade, string, error) {
 	query := `SELECT id, taker_order_id, user_id, market, asset_id, side, size,
 			fee_rate_bps, price, status, match_time, last_update, outcome,
-			owner, maker_address, bucket_index, transaction_hash, trader_side, maker_orders
+			owner, maker_address
 		 FROM trades WHERE user_id = $1`
 	args := []any{userID}
 	argIdx := 2
@@ -382,7 +299,6 @@ func (r *Repository) GetTradesByUserID(ctx context.Context, userID string, marke
 	if cursor != nil && *cursor != "" {
 		query += fmt.Sprintf(" AND id < $%d", argIdx)
 		args = append(args, *cursor)
-		argIdx++
 	}
 	query += " ORDER BY match_time DESC LIMIT 101"
 
@@ -399,13 +315,16 @@ func (r *Repository) GetTradesByUserID(ctx context.Context, userID string, marke
 		if err := rows.Scan(
 			&t.ID, &t.TakerOrderID, &t.UserID, &t.Market, &t.AssetID, &t.Side,
 			&t.Size, &t.FeeRateBps, &t.Price, &t.Status, &matchTime, &lastUpdate,
-			&t.Outcome, &t.Owner, &t.MakerAddress, &t.BucketIndex, &t.TransactionHash,
-			&t.TraderSide, &t.MakerOrders,
+			&t.Outcome, &t.Owner, &t.MakerAddress,
 		); err != nil {
 			return nil, "", fmt.Errorf("scan trade: %w", err)
 		}
 		t.MatchTime = matchTime.Format(time.RFC3339)
 		t.LastUpdate = lastUpdate.Format(time.RFC3339)
+		t.TraderSide = "TAKER"
+		t.TransactionHash = ""
+		t.BucketIndex = 0
+		t.MakerOrders = []byte("[]")
 		trades = append(trades, t)
 	}
 
@@ -515,13 +434,12 @@ func (r *Repository) BeginTx(ctx context.Context) (pgx.Tx, error) {
 
 func (r *Repository) scanOrder(row pgx.Row) (*models.Order, error) {
 	o := &models.Order{}
-	var associateTrades []byte
 	err := row.Scan(
 		&o.ID, &o.UserID, &o.Salt, &o.Maker, &o.Signer, &o.Taker, &o.TokenID,
 		&o.MakerAmount, &o.TakerAmount, &o.Side, &o.Expiration, &o.Nonce, &o.FeeRateBps,
 		&o.SignatureType, &o.Signature, &o.Price, &o.OriginalSize, &o.SizeMatched, &o.Status,
 		&o.OrderType, &o.PostOnly, &o.Owner, &o.Market, &o.AssetID, &o.Outcome,
-		&associateTrades, &o.CreatedAt, &o.UpdatedAt,
+		&o.CreatedAt, &o.UpdatedAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -536,13 +454,12 @@ func (r *Repository) scanOrders(rows pgx.Rows) ([]*models.Order, error) {
 	var orders []*models.Order
 	for rows.Next() {
 		o := &models.Order{}
-		var associateTrades []byte
 		if err := rows.Scan(
 			&o.ID, &o.UserID, &o.Salt, &o.Maker, &o.Signer, &o.Taker, &o.TokenID,
 			&o.MakerAmount, &o.TakerAmount, &o.Side, &o.Expiration, &o.Nonce, &o.FeeRateBps,
 			&o.SignatureType, &o.Signature, &o.Price, &o.OriginalSize, &o.SizeMatched, &o.Status,
 			&o.OrderType, &o.PostOnly, &o.Owner, &o.Market, &o.AssetID, &o.Outcome,
-			&associateTrades, &o.CreatedAt, &o.UpdatedAt,
+			&o.CreatedAt, &o.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan order: %w", err)
 		}

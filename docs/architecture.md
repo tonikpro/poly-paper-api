@@ -66,15 +66,12 @@ Key implementation details:
 | `service.go` | Order placement, cancellation (single/batch/all/by-market), queries (orders/trades/positions), balance/allowance, token resolution from Gamma API |
 | `repository.go` | All orders/trades/positions/wallets DB queries |
 | `handler.go` | CLOB HTTP handlers for trading endpoints |
-| `matcher.go` | Fetches live Polymarket orderbook; simulates fill against real bids/asks |
-| `worker.go` | `StartMatchWorker` — goroutine, ticks every 10s, calls `MatchLiveOrders` |
 | `proxy.go` | `ProxyHandler` — strips `/clob` prefix, forwards to `POLYMARKET_CLOB_URL` |
 
-**Order matching flow**:
-1. `PlaceOrder` — validate, derive price/size from maker/taker amounts, resolve token from Gamma if unknown, check balance, insert order, attempt immediate fill
-2. `MatchOrder` — fetch live book, walk asks (BUY) or bids (SELL), compute weighted fill price
-3. On fill: update order status, create trade record, adjust positions (avg price via cost-basis calc), debit/credit wallets
-4. Background worker retries unfilled LIVE orders every 10s
+**Order fill flow** (instant fill — no orderbook matching):
+1. `PlaceOrder` — validate, derive price/size from maker/taker amounts, resolve token from Gamma if unknown
+2. Single atomic transaction: debit wallet → insert order (status=MATCHED) → insert trade → credit wallet → upsert position
+3. Returns `OrderResponse{status: "MATCHED"}` synchronously — no background workers, no LIVE order state
 
 ### `internal/sync`
 | File | Responsibility |
@@ -101,13 +98,12 @@ wallets            — virtual balances; COLLATERAL (token_id='') or CONDITIONAL
 markets            — Polymarket markets synced from Gamma (condition_id, active/closed, tick_size)
 outcome_tokens     — YES/NO tokens per market, winner flag set on resolution
 orders             — full wire-compatible order fields + derived price/size/status
-trades             — fill records linked to orders (fill_key UNIQUE prevents double-fills)
+trades             — fill records linked to orders
 positions          — per-user per-token; tracks size, avg_price, realized_pnl
 ```
 
 Key constraints:
 - `orders.UNIQUE(maker, salt)` — deduplication
-- `trades.fill_key UNIQUE` — idempotent fills
 - `wallets.UNIQUE(user_id, asset_type, token_id)`
 - `positions.UNIQUE(user_id, token_id)`
 
@@ -115,8 +111,17 @@ Key constraints:
 
 | Worker | Interval | What it does |
 |---|---|---|
-| `MatchWorker` | 10s | Calls `MatchLiveOrders` — tries to fill all `LIVE` orders |
 | `SyncPoller` | 60s (+ immediate) | Fetches Gamma for active token markets, settles resolved ones |
+
+## Design Decisions
+
+These are intentional simplifications for a **paper / demo trading account**. Do not treat them as bugs or missing features.
+
+### Order types are ignored
+`order_type` (GTC / FOK / FAK / GTD) and `post_only` are accepted for Polymarket CLOB API compatibility and stored in the database, but all orders execute identically — instant full fill at the requested price. Bots that rely on order-type semantics (e.g. FOK rejecting on partial fill) will get false-positive results; this is acceptable for a mock environment.
+
+### Resolved markets are not blocked
+`PlaceOrder` does not check `outcome_tokens.winner` before filling. Clients can submit orders on already-resolved markets and receive payout on settlement. This is intentional — enforcing market state is not a goal of the paper trading environment.
 
 ## OpenAPI Code Generation
 

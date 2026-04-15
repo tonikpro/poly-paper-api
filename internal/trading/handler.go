@@ -293,7 +293,7 @@ func orderToOpenOrder(o *models.Order) clob.OpenOrder {
 		OriginalSize:    &o.OriginalSize,
 		SizeMatched:     &o.SizeMatched,
 		Price:           &o.Price,
-		AssociateTrades: &o.AssociateTrades,
+		AssociateTrades: &[]string{},
 		Outcome:         &o.Outcome,
 		CreatedAt:       &createdAt,
 		Expiration:      &o.Expiration,

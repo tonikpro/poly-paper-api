@@ -119,7 +119,6 @@ type Order struct {
 	Market          string    `json:"market"`
 	AssetID         string    `json:"asset_id"`
 	Outcome         string    `json:"outcome,omitempty"`
-	AssociateTrades []string  `json:"associate_trades"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -136,7 +135,6 @@ type OpenOrder struct {
 	OriginalSize    string   `json:"original_size"`
 	SizeMatched     string   `json:"size_matched"`
 	Price           string   `json:"price"`
-	AssociateTrades []string `json:"associate_trades"`
 	Outcome         string   `json:"outcome"`
 	CreatedAt       string   `json:"created_at"`
 	Expiration      string   `json:"expiration"`
@@ -163,7 +161,6 @@ type Trade struct {
 	BucketIndex     int    `json:"bucket_index"`
 	TransactionHash string `json:"transaction_hash"`
 	TraderSide      string `json:"trader_side"`
-	FillKey         string `json:"-"`
 	MakerOrders     []byte `json:"maker_orders"`
 }
 

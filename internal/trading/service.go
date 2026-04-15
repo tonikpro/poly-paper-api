@@ -3,12 +3,10 @@ package trading
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,37 +16,31 @@ import (
 
 type Service struct {
 	repo       *Repository
-	matcher    *Matcher
 	gammaURL   string
 	httpClient *http.Client
 }
 
-func NewService(repo *Repository, matcher *Matcher, gammaURL string) *Service {
+func NewService(repo *Repository, gammaURL string) *Service {
 	return &Service{
 		repo:       repo,
-		matcher:    matcher,
 		gammaURL:   gammaURL,
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
-// PlaceOrder validates and creates an order, attempts immediate matching.
+// PlaceOrder validates, creates, and instantly fills an order in one transaction.
 func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.PostOrderRequest) (*models.OrderResponse, error) {
 	signed := req.Order
 
-	// Derive price and size from maker/taker amounts
 	price, size, err := deriveOrderPriceAndSize(signed.Side, signed.MakerAmount, signed.TakerAmount)
 	if err != nil {
 		return nil, fmt.Errorf("invalid order amounts: %w", err)
 	}
 
-	// Look up the outcome token for market/outcome info
 	token, err := s.repo.GetOutcomeToken(ctx, signed.TokenID)
 	if err != nil {
 		return nil, fmt.Errorf("lookup token: %w", err)
 	}
-
-	// If token not in DB, fetch from Polymarket Gamma API and store it
 	if token == nil {
 		token, err = s.fetchAndStoreToken(ctx, signed.TokenID)
 		if err != nil {
@@ -56,8 +48,8 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		}
 	}
 
-	marketID := token.MarketID
-	outcome := token.Outcome
+	priceStr := fmt.Sprintf("%.4f", price)
+	sizeStr := fmt.Sprintf("%.6f", size)
 
 	order := &models.Order{
 		UserID:        userID,
@@ -74,82 +66,108 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		FeeRateBps:    signed.FeeRateBps,
 		SignatureType: signed.SignatureType,
 		Signature:     signed.Signature,
-		Price:         fmt.Sprintf("%.4f", price),
-		OriginalSize:  fmt.Sprintf("%.6f", size),
-		SizeMatched:   "0",
-		Status:        "LIVE",
+		Price:         priceStr,
+		OriginalSize:  sizeStr,
+		SizeMatched:   sizeStr, // fully filled immediately
+		Status:        "MATCHED",
 		OrderType:     req.OrderType,
 		PostOnly:      req.PostOnly,
 		Owner:         req.Owner,
-		Market:        marketID,
+		Market:        token.MarketID,
 		AssetID:       signed.TokenID,
-		Outcome:       outcome,
+		Outcome:       token.Outcome,
 	}
 
-	// Reserve funds and create order atomically:
-	// BUY  → lock (size * price) collateral
-	// SELL → lock size conditional tokens
 	tx, err := s.repo.BeginTx(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin order tx: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	txDone := false
-	defer func() {
-		if !txDone {
-			tx.Rollback(ctx)
-		}
-	}()
+	defer tx.Rollback(ctx)
 
+	// 1. Debit reserved funds
 	if order.Side == "BUY" {
 		reserveStr := fmt.Sprintf("%.6f", size*price)
 		if err := s.repo.DebitWallet(ctx, tx, userID, "COLLATERAL", "", reserveStr); err != nil {
 			return nil, fmt.Errorf("insufficient balance: %w", err)
 		}
 	} else {
-		sizeStr := fmt.Sprintf("%.6f", size)
 		if err := s.repo.DebitWallet(ctx, tx, userID, "CONDITIONAL", signed.TokenID, sizeStr); err != nil {
 			return nil, fmt.Errorf("insufficient conditional balance: %w", err)
 		}
 	}
 
+	// 2. Persist order (already MATCHED)
 	if err := s.repo.CreateOrderTx(ctx, tx, order); err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit order: %w", err)
-	}
-	txDone = true
 
-	// Try immediate matching
-	matchResult, matchErr := s.tryMatch(ctx, order, price, size)
-	if matchErr != nil {
-		slog.Warn("match attempt failed, order stays LIVE", "order_id", order.ID, "error", matchErr)
+	// 3. Create fill record
+	trade := &models.Trade{
+		TakerOrderID: order.ID,
+		UserID:       userID,
+		Market:       order.Market,
+		AssetID:      order.AssetID,
+		Side:         order.Side,
+		Size:         sizeStr,
+		FeeRateBps:   order.FeeRateBps,
+		Price:        priceStr,
+		Status:       "MATCHED",
+		Outcome:      order.Outcome,
+		Owner:        order.Owner,
+		MakerAddress: order.Maker,
+	}
+	if err := s.repo.CreateTrade(ctx, tx, trade); err != nil {
+		return nil, fmt.Errorf("create trade: %w", err)
 	}
 
-	status := order.Status
-	if matchResult != nil && matchResult.Filled {
-		if matchResult.Remaining <= 0.000001 {
-			status = "MATCHED"
-		} else {
-			status = "LIVE"
+	// 4. Credit received assets
+	if order.Side == "BUY" {
+		if err := s.repo.CreditWallet(ctx, tx, userID, "CONDITIONAL", signed.TokenID, sizeStr); err != nil {
+			return nil, fmt.Errorf("credit conditional: %w", err)
+		}
+	} else {
+		costStr := fmt.Sprintf("%.6f", size*price)
+		if err := s.repo.CreditWallet(ctx, tx, userID, "COLLATERAL", "", costStr); err != nil {
+			return nil, fmt.Errorf("credit collateral: %w", err)
 		}
 	}
 
-	// FOK: must fill entirely or cancel
-	if req.OrderType == "FOK" && status != "MATCHED" {
-		_, _ = s.repo.CancelOrder(ctx, order.ID, userID)
-		return &models.OrderResponse{
-			Success:  false,
-			ErrorMsg: "FOK order could not be fully filled",
-			OrderID:  order.ID,
-			Status:   "CANCELED",
-		}, nil
+	// 5. Update position
+	pos, err := s.repo.GetPositionForUpdate(ctx, tx, userID, signed.TokenID)
+	if err != nil {
+		return nil, fmt.Errorf("get position: %w", err)
+	}
+	if order.Side == "BUY" {
+		var newSize, newAvg float64
+		if pos != nil {
+			existingSize, _ := strconv.ParseFloat(pos.Size, 64)
+			existingAvg, _ := strconv.ParseFloat(pos.AvgPrice, 64)
+			newSize = existingSize + size
+			newAvg = (existingSize*existingAvg + size*price) / newSize
+		} else {
+			newSize = size
+			newAvg = price
+		}
+		if err := s.repo.UpsertPosition(ctx, tx, userID, signed.TokenID, order.Market, order.Outcome,
+			fmt.Sprintf("%.6f", newSize), fmt.Sprintf("%.4f", newAvg)); err != nil {
+			return nil, fmt.Errorf("upsert position: %w", err)
+		}
+	} else {
+		if pos != nil {
+			existingSize, _ := strconv.ParseFloat(pos.Size, 64)
+			newSize := existingSize - size
+			if newSize < 0.000001 {
+				newSize = 0
+			}
+			if err := s.repo.UpsertPosition(ctx, tx, userID, signed.TokenID, order.Market, order.Outcome,
+				fmt.Sprintf("%.6f", newSize), pos.AvgPrice); err != nil {
+				return nil, fmt.Errorf("upsert position: %w", err)
+			}
+		}
 	}
 
-	// FAK: fill what we can, cancel the rest
-	if req.OrderType == "FAK" && matchResult != nil && matchResult.Remaining > 0.000001 {
-		_, _ = s.repo.CancelOrder(ctx, order.ID, userID)
-		status = "CANCELED"
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 
 	return &models.OrderResponse{
@@ -157,161 +175,10 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		ErrorMsg:           "",
 		OrderID:            order.ID,
 		TransactionsHashes: []string{},
-		Status:             status,
+		Status:             "MATCHED",
 		TakingAmount:       order.TakerAmount,
 		MakingAmount:       order.MakerAmount,
 	}, nil
-}
-
-// tryMatch attempts to fill an order against the Polymarket orderbook.
-func (s *Service) tryMatch(ctx context.Context, order *models.Order, price, size float64) (*MatchResult, error) {
-	slog.Info("tryMatch: attempting match",
-		"order_id", order.ID, "token_id", order.TokenID,
-		"side", order.Side, "price", price, "size", size)
-
-	result, err := s.matcher.MatchOrder(order.TokenID, order.Side, price, size)
-	if err != nil {
-		slog.Warn("tryMatch: MatchOrder failed", "order_id", order.ID, "error", err)
-		return nil, err
-	}
-
-	slog.Info("tryMatch: match result",
-		"order_id", order.ID, "filled", result.Filled,
-		"fill_price", result.FillPrice, "fill_size", result.FillSize,
-		"remaining", result.Remaining)
-
-	if !result.Filled || result.FillSize <= 0 {
-		return result, nil
-	}
-
-	if err := s.executeFill(ctx, order, result); err != nil {
-		slog.Error("tryMatch: executeFill failed", "order_id", order.ID, "error", err)
-		return nil, fmt.Errorf("execute fill: %w", err)
-	}
-
-	return result, nil
-}
-
-// executeFill runs the fill inside a transaction with proper locking.
-func (s *Service) executeFill(ctx context.Context, order *models.Order, result *MatchResult) error {
-	tx, err := s.repo.BeginTx(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	// Lock the order
-	locked, err := s.repo.GetOrderByIDForUpdate(ctx, tx, order.ID)
-	if err != nil || locked == nil {
-		return fmt.Errorf("lock order: %w", err)
-	}
-	if locked.Status != "LIVE" {
-		return fmt.Errorf("order no longer live")
-	}
-
-	fillSizeStr := fmt.Sprintf("%.6f", result.FillSize)
-	fillPriceStr := fmt.Sprintf("%.4f", result.FillPrice)
-	fillKey := fmt.Sprintf("%s-%s-%.6f", order.ID, fillPriceStr, result.FillSize)
-
-	// Determine new status
-	currentMatched, _ := strconv.ParseFloat(locked.SizeMatched, 64)
-	newMatched := currentMatched + result.FillSize
-	originalSize, _ := strconv.ParseFloat(locked.OriginalSize, 64)
-	newStatus := "LIVE"
-	if newMatched >= originalSize-0.000001 {
-		newStatus = "MATCHED"
-	}
-	newMatchedStr := fmt.Sprintf("%.6f", newMatched)
-
-	// Create trade
-	trade := &models.Trade{
-		TakerOrderID: order.ID,
-		UserID:       order.UserID,
-		Market:       order.Market,
-		AssetID:      order.AssetID,
-		Side:         order.Side,
-		Size:         fillSizeStr,
-		FeeRateBps:   order.FeeRateBps,
-		Price:        fillPriceStr,
-		Status:       "MATCHED",
-		Outcome:      order.Outcome,
-		Owner:        order.Owner,
-		MakerAddress: order.Maker,
-		TraderSide:   "TAKER",
-		FillKey:      fillKey,
-	}
-
-	if err := s.repo.CreateTrade(ctx, tx, trade); err != nil {
-		return fmt.Errorf("create trade: %w", err)
-	}
-
-	// Update order
-	if err := s.repo.UpdateOrderFill(ctx, tx, order.ID, newMatchedStr, newStatus, trade.ID); err != nil {
-		return fmt.Errorf("update order: %w", err)
-	}
-
-	// Update wallet and position.
-	// Funds were already reserved when the order was placed, so we don't debit again.
-	// For BUY: reserved (size * limit_price). If fill_price < limit_price, refund the excess.
-	// For SELL: reserved the conditional tokens. Just credit the received collateral.
-	limitPrice, _ := strconv.ParseFloat(order.Price, 64)
-
-	if order.Side == "BUY" {
-		excess := (limitPrice - result.FillPrice) * result.FillSize
-		if excess > 0.000001 {
-			excessStr := fmt.Sprintf("%.6f", excess)
-			if err := s.repo.CreditWallet(ctx, tx, order.UserID, "COLLATERAL", "", excessStr); err != nil {
-				return fmt.Errorf("refund excess collateral: %w", err)
-			}
-		}
-		if err := s.repo.CreditWallet(ctx, tx, order.UserID, "CONDITIONAL", order.TokenID, fillSizeStr); err != nil {
-			return fmt.Errorf("credit conditional: %w", err)
-		}
-	} else {
-		// SELL: conditional tokens already reserved; credit received collateral
-		costStr := fmt.Sprintf("%.6f", result.FillSize*result.FillPrice)
-		if err := s.repo.CreditWallet(ctx, tx, order.UserID, "COLLATERAL", "", costStr); err != nil {
-			return fmt.Errorf("credit collateral: %w", err)
-		}
-	}
-
-	// Update position
-	pos, err := s.repo.GetPositionForUpdate(ctx, tx, order.UserID, order.TokenID)
-	if err != nil {
-		return fmt.Errorf("get position: %w", err)
-	}
-
-	if order.Side == "BUY" {
-		var newSize, newAvg float64
-		if pos != nil {
-			existingSize, _ := strconv.ParseFloat(pos.Size, 64)
-			existingAvg, _ := strconv.ParseFloat(pos.AvgPrice, 64)
-			newSize = existingSize + result.FillSize
-			newAvg = (existingSize*existingAvg + result.FillSize*result.FillPrice) / newSize
-		} else {
-			newSize = result.FillSize
-			newAvg = result.FillPrice
-		}
-		if err := s.repo.UpsertPosition(ctx, tx, order.UserID, order.TokenID, order.Market, order.Outcome,
-			fmt.Sprintf("%.6f", newSize), fmt.Sprintf("%.4f", newAvg)); err != nil {
-			return fmt.Errorf("upsert position: %w", err)
-		}
-	} else {
-		// SELL: reduce position
-		if pos != nil {
-			existingSize, _ := strconv.ParseFloat(pos.Size, 64)
-			newSize := existingSize - result.FillSize
-			if newSize < 0.000001 {
-				newSize = 0
-			}
-			if err := s.repo.UpsertPosition(ctx, tx, order.UserID, order.TokenID, order.Market, order.Outcome,
-				fmt.Sprintf("%.6f", newSize), pos.AvgPrice); err != nil {
-				return fmt.Errorf("upsert position: %w", err)
-			}
-		}
-	}
-
-	return tx.Commit(ctx)
 }
 
 // CancelOrder cancels a single order.
@@ -410,143 +277,6 @@ func (s *Service) GetBalanceAllowance(ctx context.Context, userID, assetType, to
 		Balance:   wallet.Balance,
 		Allowance: wallet.Allowance,
 	}, nil
-}
-
-// MatchLiveOrders is called by the background worker to check all live orders.
-func (s *Service) MatchLiveOrders(ctx context.Context) error {
-	tx, err := s.repo.BeginTx(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	orders, err := s.repo.GetLiveOrdersForUpdate(ctx, tx)
-	if err != nil {
-		return err
-	}
-
-	// We need to commit the lock transaction before attempting matches,
-	// because matching opens new transactions per order.
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-
-	// Group by token to batch API calls
-	byToken := make(map[string][]*models.Order)
-	for _, o := range orders {
-		byToken[o.TokenID] = append(byToken[o.TokenID], o)
-	}
-
-	for tokenID, tokenOrders := range byToken {
-		book, err := s.matcher.FetchOrderBook(tokenID)
-		if err != nil {
-			if errors.Is(err, ErrOrderBookNotFound) {
-				n, cancelErr := s.repo.CancelLiveOrdersByTokenID(ctx, tokenID)
-				if cancelErr != nil {
-					slog.Warn("failed to cancel orders for resolved market", "token_id", tokenID, "error", cancelErr)
-				} else {
-					slog.Info("canceled orders for resolved market", "token_id", tokenID, "count", n, "orders", len(tokenOrders))
-				}
-			} else {
-				slog.Warn("failed to fetch book for background match", "token_id", tokenID, "error", err)
-			}
-			continue
-		}
-
-		for _, order := range tokenOrders {
-			// Check GTD expiration
-			if order.OrderType == "GTD" && order.Expiration != "0" {
-				exp, _ := strconv.ParseInt(order.Expiration, 10, 64)
-				if exp > 0 {
-					now := strconv.FormatInt(exp, 10) // just check if expired
-					_ = now
-					// TODO: compare with current time
-				}
-			}
-
-			price, _ := strconv.ParseFloat(order.Price, 64)
-			origSize, _ := strconv.ParseFloat(order.OriginalSize, 64)
-			matched, _ := strconv.ParseFloat(order.SizeMatched, 64)
-			remaining := origSize - matched
-
-			slog.Info("background match: checking order",
-				"order_id", order.ID, "side", order.Side,
-				"price", price, "remaining", remaining,
-				"num_bids", len(book.Bids), "num_asks", len(book.Asks))
-
-			result := matchAgainstBook(book, order.Side, price, remaining)
-			if result.Filled {
-				slog.Info("background match: fill found",
-					"order_id", order.ID, "fill_price", result.FillPrice,
-					"fill_size", result.FillSize, "remaining", result.Remaining)
-				if err := s.executeFill(ctx, order, result); err != nil {
-					slog.Warn("background fill failed", "order_id", order.ID, "error", err)
-				} else {
-					slog.Info("background match: fill executed", "order_id", order.ID)
-				}
-			} else {
-				slog.Info("background match: no fill",
-					"order_id", order.ID, "side", order.Side, "price", price)
-			}
-		}
-	}
-
-	return nil
-}
-
-// matchAgainstBook matches against a pre-fetched orderbook (no API call).
-func matchAgainstBook(book *OrderBookResponse, side string, orderPrice, orderSize float64) *MatchResult {
-	result := &MatchResult{Remaining: orderSize}
-
-	if side == "BUY" {
-		asks := parseLevels(book.Asks)
-		sort.Slice(asks, func(i, j int) bool { return asks[i].price < asks[j].price })
-		var totalFilled, weightedPrice float64
-		for _, level := range asks {
-			if orderPrice < level.price {
-				break
-			}
-			canFill := orderSize - totalFilled
-			if canFill <= 0 {
-				break
-			}
-			fillAtLevel := min(canFill, level.size)
-			weightedPrice += fillAtLevel * level.price
-			totalFilled += fillAtLevel
-		}
-		if totalFilled > 0 {
-			result.Filled = true
-			result.FillPrice = weightedPrice / totalFilled
-			result.FillSize = totalFilled
-			result.Remaining = orderSize - totalFilled
-			result.Partial = result.Remaining > 0
-		}
-	} else {
-		bids := parseLevels(book.Bids)
-		sort.Slice(bids, func(i, j int) bool { return bids[i].price > bids[j].price })
-		var totalFilled, weightedPrice float64
-		for _, level := range bids {
-			if orderPrice > level.price {
-				break
-			}
-			canFill := orderSize - totalFilled
-			if canFill <= 0 {
-				break
-			}
-			fillAtLevel := min(canFill, level.size)
-			weightedPrice += fillAtLevel * level.price
-			totalFilled += fillAtLevel
-		}
-		if totalFilled > 0 {
-			result.Filled = true
-			result.FillPrice = weightedPrice / totalFilled
-			result.FillSize = totalFilled
-			result.Remaining = orderSize - totalFilled
-			result.Partial = result.Remaining > 0
-		}
-	}
-
-	return result
 }
 
 // deriveOrderPriceAndSize computes price and size from makerAmount/takerAmount.
