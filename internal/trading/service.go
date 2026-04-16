@@ -3,6 +3,7 @@ package trading
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -11,24 +12,57 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/tonikpro/poly-paper-api/internal/models"
 )
 
 type Service struct {
-	repo       *Repository
-	gammaURL   string
-	httpClient *http.Client
+	repo        *Repository
+	bookClient  *OrderBookClient
+	gammaURL    string
+	httpClient  *http.Client
 }
 
-func NewService(repo *Repository, gammaURL string) *Service {
+func NewService(repo *Repository, bookClient *OrderBookClient, gammaURL string) *Service {
 	return &Service{
-		repo:       repo,
-		gammaURL:   gammaURL,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		repo:        repo,
+		bookClient:  bookClient,
+		gammaURL:    gammaURL,
+		httpClient:  &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
-// PlaceOrder validates, creates, and instantly fills an order in one transaction.
+// determineInitialFill returns the order's initial status, the size to fill now, and the fill price.
+// matchResult is nil when the orderbook was unavailable (transient error).
+func determineInitialFill(orderType string, size float64, matchResult *MatchResult) (status string, fillSize float64, fillPrice float64) {
+	if matchResult == nil || matchResult.FillSize < 0.000001 {
+		switch orderType {
+		case "FOK", "FAK":
+			return "CANCELED", 0, 0
+		default:
+			return "LIVE", 0, 0
+		}
+	}
+
+	if matchResult.FillSize >= size-0.000001 {
+		// Fully filled
+		return "MATCHED", matchResult.FillSize, matchResult.FillPrice
+	}
+
+	// Partially filled
+	switch orderType {
+	case "FOK":
+		return "CANCELED", 0, 0
+	case "FAK":
+		return "CANCELED", matchResult.FillSize, matchResult.FillPrice
+	default: // GTC, GTD
+		return "LIVE", matchResult.FillSize, matchResult.FillPrice
+	}
+}
+
+// PlaceOrder validates the order, checks the live Polymarket orderbook for an immediate fill,
+// and persists everything in a single transaction.
+// If the orderbook is unavailable, the order is created as LIVE for the worker to retry.
 func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.PostOrderRequest) (*models.OrderResponse, error) {
 	signed := req.Order
 
@@ -48,8 +82,36 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		}
 	}
 
+	// Fetch live orderbook; a 404 means the market is closed — reject immediately.
+	// Any other error is transient — fall back to LIVE so the worker can retry.
+	var matchResult *MatchResult
+	book, bookErr := s.bookClient.FetchOrderBook(signed.TokenID)
+	if bookErr != nil {
+		if errors.Is(bookErr, ErrOrderBookNotFound) {
+			return nil, fmt.Errorf("market is closed or does not exist")
+		}
+		slog.Warn("orderbook unavailable, order will stay LIVE", "token_id", signed.TokenID, "error", bookErr)
+	} else {
+		matchResult = MatchOrder(book, signed.Side, price, size)
+	}
+
+	initialStatus, fillSize, fillPrice := determineInitialFill(req.OrderType, size, matchResult)
+
+	// FOK: never create the order if it can't fully fill
+	if req.OrderType == "FOK" && initialStatus == "CANCELED" {
+		return &models.OrderResponse{
+			Success:  false,
+			ErrorMsg: "FOK order could not be fully filled",
+			Status:   "CANCELED",
+		}, nil
+	}
+
 	priceStr := fmt.Sprintf("%.4f", price)
 	sizeStr := fmt.Sprintf("%.6f", size)
+	sizeMatchedStr := "0"
+	if fillSize > 0 {
+		sizeMatchedStr = fmt.Sprintf("%.6f", fillSize)
+	}
 
 	order := &models.Order{
 		UserID:        userID,
@@ -68,8 +130,8 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		Signature:     signed.Signature,
 		Price:         priceStr,
 		OriginalSize:  sizeStr,
-		SizeMatched:   sizeStr, // fully filled immediately
-		Status:        "MATCHED",
+		SizeMatched:   sizeMatchedStr,
+		Status:        initialStatus,
 		OrderType:     req.OrderType,
 		PostOnly:      req.PostOnly,
 		Owner:         req.Owner,
@@ -84,7 +146,7 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Debit reserved funds
+	// 1. Reserve funds at limit price
 	if order.Side == "BUY" {
 		reserveStr := fmt.Sprintf("%.6f", size*price)
 		if err := s.repo.DebitWallet(ctx, tx, userID, "COLLATERAL", "", reserveStr); err != nil {
@@ -96,73 +158,23 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 		}
 	}
 
-	// 2. Persist order (already MATCHED)
+	// 2. Create the order
 	if err := s.repo.CreateOrderTx(ctx, tx, order); err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
 	}
 
-	// 3. Create fill record
-	trade := &models.Trade{
-		TakerOrderID: order.ID,
-		UserID:       userID,
-		Market:       order.Market,
-		AssetID:      order.AssetID,
-		Side:         order.Side,
-		Size:         sizeStr,
-		FeeRateBps:   order.FeeRateBps,
-		Price:        priceStr,
-		Status:       "MATCHED",
-		Outcome:      order.Outcome,
-		Owner:        order.Owner,
-		MakerAddress: order.Maker,
-	}
-	if err := s.repo.CreateTrade(ctx, tx, trade); err != nil {
-		return nil, fmt.Errorf("create trade: %w", err)
-	}
-
-	// 4. Credit received assets
-	if order.Side == "BUY" {
-		if err := s.repo.CreditWallet(ctx, tx, userID, "CONDITIONAL", signed.TokenID, sizeStr); err != nil {
-			return nil, fmt.Errorf("credit conditional: %w", err)
-		}
-	} else {
-		costStr := fmt.Sprintf("%.6f", size*price)
-		if err := s.repo.CreditWallet(ctx, tx, userID, "COLLATERAL", "", costStr); err != nil {
-			return nil, fmt.Errorf("credit collateral: %w", err)
+	// 3. Apply fill if any (creates trade, credits assets, updates position)
+	if fillSize > 0 {
+		if err := s.applyFill(ctx, tx, order, fillSize, fillPrice); err != nil {
+			return nil, fmt.Errorf("apply fill: %w", err)
 		}
 	}
 
-	// 5. Update position
-	pos, err := s.repo.GetPositionForUpdate(ctx, tx, userID, signed.TokenID)
-	if err != nil {
-		return nil, fmt.Errorf("get position: %w", err)
-	}
-	if order.Side == "BUY" {
-		var newSize, newAvg float64
-		if pos != nil {
-			existingSize, _ := strconv.ParseFloat(pos.Size, 64)
-			existingAvg, _ := strconv.ParseFloat(pos.AvgPrice, 64)
-			newSize = existingSize + size
-			newAvg = (existingSize*existingAvg + size*price) / newSize
-		} else {
-			newSize = size
-			newAvg = price
-		}
-		if err := s.repo.UpsertPosition(ctx, tx, userID, signed.TokenID, order.Market, order.Outcome,
-			fmt.Sprintf("%.6f", newSize), fmt.Sprintf("%.4f", newAvg)); err != nil {
-			return nil, fmt.Errorf("upsert position: %w", err)
-		}
-	} else {
-		if pos != nil {
-			existingSize, _ := strconv.ParseFloat(pos.Size, 64)
-			newSize := existingSize - size
-			if newSize < 0.000001 {
-				newSize = 0
-			}
-			if err := s.repo.UpsertPosition(ctx, tx, userID, signed.TokenID, order.Market, order.Outcome,
-				fmt.Sprintf("%.6f", newSize), pos.AvgPrice); err != nil {
-				return nil, fmt.Errorf("upsert position: %w", err)
-			}
+	// 4. FAK: refund the unfilled portion (fill happened or not)
+	if req.OrderType == "FAK" && initialStatus == "CANCELED" {
+		remaining := size - fillSize
+		if err := refundOrderReservation(ctx, tx, userID, order.Side, signed.TokenID, remaining, price); err != nil {
+			return nil, fmt.Errorf("refund FAK remainder: %w", err)
 		}
 	}
 
@@ -172,13 +184,178 @@ func (s *Service) PlaceOrder(ctx context.Context, userID string, req *models.Pos
 
 	return &models.OrderResponse{
 		Success:            true,
-		ErrorMsg:           "",
 		OrderID:            order.ID,
 		TransactionsHashes: []string{},
-		Status:             "MATCHED",
+		Status:             initialStatus,
 		TakingAmount:       order.TakerAmount,
 		MakingAmount:       order.MakerAmount,
 	}, nil
+}
+
+// applyFill creates a trade record and updates wallets and position for a fill.
+// Used by PlaceOrder for immediate fills. The order must already have been created.
+func (s *Service) applyFill(ctx context.Context, tx pgx.Tx, order *models.Order, fillSize, fillPrice float64) error {
+	limitPrice, _ := strconv.ParseFloat(order.Price, 64)
+	fillSizeStr := fmt.Sprintf("%.6f", fillSize)
+	fillPriceStr := fmt.Sprintf("%.4f", fillPrice)
+
+	trade := &models.Trade{
+		TakerOrderID: order.ID,
+		UserID:       order.UserID,
+		Market:       order.Market,
+		AssetID:      order.AssetID,
+		Side:         order.Side,
+		Size:         fillSizeStr,
+		FeeRateBps:   order.FeeRateBps,
+		Price:        fillPriceStr,
+		Status:       "MATCHED",
+		Outcome:      order.Outcome,
+		Owner:        order.Owner,
+		MakerAddress: order.Maker,
+	}
+	if err := s.repo.CreateTrade(ctx, tx, trade); err != nil {
+		return fmt.Errorf("create trade: %w", err)
+	}
+
+	if order.Side == "BUY" {
+		excess := (limitPrice - fillPrice) * fillSize
+		if excess > 0.000001 {
+			if err := s.repo.CreditWallet(ctx, tx, order.UserID, "COLLATERAL", "", fmt.Sprintf("%.6f", excess)); err != nil {
+				return fmt.Errorf("refund excess collateral: %w", err)
+			}
+		}
+		if err := s.repo.CreditWallet(ctx, tx, order.UserID, "CONDITIONAL", order.TokenID, fillSizeStr); err != nil {
+			return fmt.Errorf("credit conditional: %w", err)
+		}
+	} else {
+		costStr := fmt.Sprintf("%.6f", fillSize*fillPrice)
+		if err := s.repo.CreditWallet(ctx, tx, order.UserID, "COLLATERAL", "", costStr); err != nil {
+			return fmt.Errorf("credit collateral: %w", err)
+		}
+	}
+
+	return s.updatePosition(ctx, tx, order.UserID, order.TokenID, order.Market, order.Outcome, order.Side, fillSize, fillPrice)
+}
+
+// updatePosition adjusts the user's position after a fill.
+func (s *Service) updatePosition(ctx context.Context, tx pgx.Tx, userID, tokenID, market, outcome, side string, fillSize, fillPrice float64) error {
+	pos, err := s.repo.GetPositionForUpdate(ctx, tx, userID, tokenID)
+	if err != nil {
+		return fmt.Errorf("get position: %w", err)
+	}
+	if side == "BUY" {
+		var newSize, newAvg float64
+		if pos != nil {
+			existingSize, _ := strconv.ParseFloat(pos.Size, 64)
+			existingAvg, _ := strconv.ParseFloat(pos.AvgPrice, 64)
+			newSize = existingSize + fillSize
+			newAvg = (existingSize*existingAvg + fillSize*fillPrice) / newSize
+		} else {
+			newSize = fillSize
+			newAvg = fillPrice
+		}
+		return s.repo.UpsertPosition(ctx, tx, userID, tokenID, market, outcome,
+			fmt.Sprintf("%.6f", newSize), fmt.Sprintf("%.4f", newAvg))
+	}
+	if pos != nil {
+		existingSize, _ := strconv.ParseFloat(pos.Size, 64)
+		newSize := existingSize - fillSize
+		if newSize < 0.000001 {
+			newSize = 0
+		}
+		return s.repo.UpsertPosition(ctx, tx, userID, tokenID, market, outcome,
+			fmt.Sprintf("%.6f", newSize), pos.AvgPrice)
+	}
+	return nil
+}
+
+// executeFill is called by the matching worker to fill a LIVE order.
+// It locks the order row, verifies it is still LIVE, then applies the fill atomically.
+func (s *Service) executeFill(ctx context.Context, order *models.Order, result *MatchResult) error {
+	tx, err := s.repo.BeginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the order to prevent double-fill from overlapping worker ticks
+	locked, err := s.repo.GetOrderByIDForUpdate(ctx, tx, order.ID)
+	if err != nil {
+		return fmt.Errorf("lock order: %w", err)
+	}
+	if locked == nil || locked.Status != "LIVE" {
+		return nil // already filled or canceled, nothing to do
+	}
+
+	currentMatched, _ := strconv.ParseFloat(locked.SizeMatched, 64)
+	originalSize, _ := strconv.ParseFloat(locked.OriginalSize, 64)
+	remaining := originalSize - currentMatched
+
+	fillSize := result.FillSize
+	if fillSize > remaining {
+		fillSize = remaining
+	}
+	if fillSize < 0.000001 {
+		return nil
+	}
+
+	fillPrice := result.FillPrice
+	newMatched := currentMatched + fillSize
+	newStatus := "LIVE"
+	if newMatched >= originalSize-0.000001 {
+		newStatus = "MATCHED"
+	}
+
+	fillSizeStr := fmt.Sprintf("%.6f", fillSize)
+	fillPriceStr := fmt.Sprintf("%.4f", fillPrice)
+	fillKey := fmt.Sprintf("%s-%.6f-%.4f", order.ID, fillSize, fillPrice)
+
+	trade := &models.Trade{
+		TakerOrderID: order.ID,
+		UserID:       order.UserID,
+		Market:       order.Market,
+		AssetID:      order.AssetID,
+		Side:         order.Side,
+		Size:         fillSizeStr,
+		FeeRateBps:   order.FeeRateBps,
+		Price:        fillPriceStr,
+		Status:       "MATCHED",
+		Outcome:      order.Outcome,
+		Owner:        order.Owner,
+		MakerAddress: order.Maker,
+		FillKey:      fillKey,
+	}
+	if err := s.repo.CreateTrade(ctx, tx, trade); err != nil {
+		return fmt.Errorf("create worker trade: %w", err)
+	}
+
+	if err := s.repo.UpdateOrderFill(ctx, tx, order.ID, fmt.Sprintf("%.6f", newMatched), newStatus); err != nil {
+		return fmt.Errorf("update order fill: %w", err)
+	}
+
+	limitPrice, _ := strconv.ParseFloat(locked.Price, 64)
+	if locked.Side == "BUY" {
+		excess := (limitPrice - fillPrice) * fillSize
+		if excess > 0.000001 {
+			if err := s.repo.CreditWallet(ctx, tx, locked.UserID, "COLLATERAL", "", fmt.Sprintf("%.6f", excess)); err != nil {
+				return fmt.Errorf("refund excess: %w", err)
+			}
+		}
+		if err := s.repo.CreditWallet(ctx, tx, locked.UserID, "CONDITIONAL", locked.TokenID, fillSizeStr); err != nil {
+			return fmt.Errorf("credit conditional: %w", err)
+		}
+	} else {
+		costStr := fmt.Sprintf("%.6f", fillSize*fillPrice)
+		if err := s.repo.CreditWallet(ctx, tx, locked.UserID, "COLLATERAL", "", costStr); err != nil {
+			return fmt.Errorf("credit collateral: %w", err)
+		}
+	}
+
+	if err := s.updatePosition(ctx, tx, locked.UserID, locked.TokenID, locked.Market, locked.Outcome, locked.Side, fillSize, fillPrice); err != nil {
+		return fmt.Errorf("update position: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // CancelOrder cancels a single order.

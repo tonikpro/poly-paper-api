@@ -53,7 +53,8 @@ func main() {
 	authSvc := auth.NewService(authRepo, cfg)
 
 	tradingRepo := trading.NewRepository(pool)
-	tradingSvc := trading.NewService(tradingRepo, cfg.PolymarketGammaURL)
+	bookClient := trading.NewOrderBookClient(cfg.PolymarketCLOBURL)
+	tradingSvc := trading.NewService(tradingRepo, bookClient, cfg.PolymarketGammaURL)
 
 	// Handlers
 	dashboardQueries := auth.NewDashboardQueries(pool)
