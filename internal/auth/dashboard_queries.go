@@ -130,7 +130,7 @@ func (q *DashboardQueries) GetPositions(ctx context.Context, userID string) ([]m
 	rows, err := q.pool.Query(ctx,
 		`SELECT p.id, p.token_id, p.outcome, p.size::text, p.avg_price::text, p.realized_pnl::text,
 		        ot.winner, COALESCE(m.question, '') AS question,
-		        p.size > 0 AS is_open
+		        ot.winner IS NULL AS is_open
 		 FROM positions p
 		 LEFT JOIN outcome_tokens ot ON p.token_id = ot.token_id
 		 LEFT JOIN markets m ON p.market_id = m.id
