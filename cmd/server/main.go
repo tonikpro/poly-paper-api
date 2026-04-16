@@ -139,6 +139,10 @@ func main() {
 	poller := polysync.NewPoller(pool, cfg.PolymarketGammaURL, resolver)
 	poller.Start(ctx, 60*time.Second)
 
+	// Start matching worker
+	matchingWorker := trading.NewWorker(tradingSvc, bookClient)
+	go matchingWorker.Start(ctx, 1*time.Second)
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
 		Addr:    addr,
