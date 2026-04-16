@@ -162,6 +162,7 @@ type Trade struct {
 	TransactionHash string `json:"transaction_hash"`
 	TraderSide      string `json:"trader_side"`
 	MakerOrders     []byte `json:"maker_orders"`
+	FillKey         string `json:"-"` // worker dedup key, not exposed via API
 }
 
 // PaginatedResponse is the cursor-paginated response envelope

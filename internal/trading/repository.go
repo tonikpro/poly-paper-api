@@ -257,13 +257,17 @@ func refundOrderReservation(ctx context.Context, tx pgx.Tx, userID, side, tokenI
 
 func (r *Repository) CreateTrade(ctx context.Context, tx pgx.Tx, t *models.Trade) error {
 	var matchTime, lastUpdate time.Time
+	var fillKey interface{}
+	if t.FillKey != "" {
+		fillKey = t.FillKey
+	}
 	err := tx.QueryRow(ctx,
 		`INSERT INTO trades (taker_order_id, user_id, market, asset_id, side, size,
-			fee_rate_bps, price, status, outcome, owner, maker_address)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+			fee_rate_bps, price, status, outcome, owner, maker_address, fill_key)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		 RETURNING id, match_time, last_update`,
 		t.TakerOrderID, t.UserID, t.Market, t.AssetID, t.Side, t.Size,
-		t.FeeRateBps, t.Price, t.Status, t.Outcome, t.Owner, t.MakerAddress,
+		t.FeeRateBps, t.Price, t.Status, t.Outcome, t.Owner, t.MakerAddress, fillKey,
 	).Scan(&t.ID, &matchTime, &lastUpdate)
 	if err != nil {
 		return fmt.Errorf("create trade: %w", err)
@@ -512,4 +516,94 @@ func (r *Repository) GetOutcomeToken(ctx context.Context, tokenID string) (*mode
 		return nil, fmt.Errorf("get outcome token: %w", err)
 	}
 	return t, nil
+}
+
+// GetAllLiveOrders returns all LIVE orders across all users, used by the matching worker.
+func (r *Repository) GetAllLiveOrders(ctx context.Context) ([]*models.Order, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, user_id, salt, maker, signer, taker, token_id,
+			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
+			signature_type, signature, price, original_size, size_matched, status,
+			order_type, post_only, owner, market, asset_id, outcome,
+			created_at, updated_at
+		 FROM orders WHERE status = 'LIVE'
+		 ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("get all live orders: %w", err)
+	}
+	defer rows.Close()
+	return r.scanOrders(rows)
+}
+
+// GetOrderByIDForUpdate fetches an order with a FOR UPDATE lock inside a transaction.
+// Used by the matching worker to prevent double-fills when ticks overlap.
+func (r *Repository) GetOrderByIDForUpdate(ctx context.Context, tx pgx.Tx, orderID string) (*models.Order, error) {
+	return r.scanOrder(tx.QueryRow(ctx,
+		`SELECT id, user_id, salt, maker, signer, taker, token_id,
+			maker_amount, taker_amount, side, expiration, nonce, fee_rate_bps,
+			signature_type, signature, price, original_size, size_matched, status,
+			order_type, post_only, owner, market, asset_id, outcome,
+			created_at, updated_at
+		 FROM orders WHERE id = $1 FOR UPDATE`, orderID))
+}
+
+// UpdateOrderFill updates an order's size_matched and status after a worker fill.
+func (r *Repository) UpdateOrderFill(ctx context.Context, tx pgx.Tx, orderID, sizeMatched, status string) error {
+	ct, err := tx.Exec(ctx,
+		`UPDATE orders SET size_matched = $2::numeric, status = $3, updated_at = now()
+		 WHERE id = $1`,
+		orderID, sizeMatched, status)
+	if err != nil {
+		return fmt.Errorf("update order fill: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("order %s not found", orderID)
+	}
+	return nil
+}
+
+// CancelLiveOrdersByTokenID cancels all LIVE orders for a given token and refunds their reserved funds.
+// Called by the worker when a 404 from the orderbook indicates the market is closed.
+func (r *Repository) CancelLiveOrdersByTokenID(ctx context.Context, tokenID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin cancel tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx,
+		`UPDATE orders SET status = 'CANCELED', updated_at = now()
+		 WHERE token_id = $1 AND status = 'LIVE'
+		 RETURNING id, user_id, side, original_size::float8, size_matched::float8, price::float8, token_id`,
+		tokenID)
+	if err != nil {
+		return fmt.Errorf("cancel orders by token: %w", err)
+	}
+
+	type row struct {
+		id, userID, side, tokenID string
+		origSize, matched, price  float64
+	}
+	var rows2 []row
+	for rows.Next() {
+		var rr row
+		if err := rows.Scan(&rr.id, &rr.userID, &rr.side, &rr.origSize, &rr.matched, &rr.price, &rr.tokenID); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan cancel row: %w", err)
+		}
+		rows2 = append(rows2, rr)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate cancel rows: %w", err)
+	}
+
+	for _, rr := range rows2 {
+		remaining := rr.origSize - rr.matched
+		if err := refundOrderReservation(ctx, tx, rr.userID, rr.side, rr.tokenID, remaining, rr.price); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
