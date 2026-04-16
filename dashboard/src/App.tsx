@@ -6,7 +6,6 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import Orders from './pages/Orders';
-import History from './pages/History';
 import Positions from './pages/Positions';
 import Wallet from './pages/Wallet';
 import ApiKeys from './pages/ApiKeys';
@@ -21,7 +20,6 @@ export default function App() {
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route index element={<Dashboard />} />
             <Route path="orders" element={<Orders />} />
-            <Route path="history" element={<History />} />
             <Route path="positions" element={<Positions />} />
             <Route path="wallet" element={<Wallet />} />
             <Route path="api-keys" element={<ApiKeys />} />

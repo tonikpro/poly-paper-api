@@ -43,7 +43,7 @@ export const getOrders = (params?: { status?: string; limit?: number; offset?: n
 
 export const getPositions = () => api.get('/api/positions');
 
-export const getTrades = (params?: { limit?: number; offset?: number }) =>
+export const getTrades = (params?: { limit?: number; offset?: number; asset_id?: string }) =>
   api.get('/api/trades', { params });
 
 export const cancelOrder = (orderID: string) =>

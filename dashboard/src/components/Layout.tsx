@@ -19,8 +19,7 @@ export default function Layout() {
               <Link to="/" className="text-xl font-bold text-gray-900">Poly Paper</Link>
               <Link to="/" className="text-gray-600 hover:text-gray-900">Dashboard</Link>
               <Link to="/orders" className="text-gray-600 hover:text-gray-900">Orders</Link>
-              <Link to="/history" className="text-gray-600 hover:text-gray-900">History</Link>
-              <Link to="/positions" className="text-gray-600 hover:text-gray-900">Positions</Link>
+<Link to="/positions" className="text-gray-600 hover:text-gray-900">Positions</Link>
               <Link to="/wallet" className="text-gray-600 hover:text-gray-900">Wallet</Link>
               <Link to="/api-keys" className="text-gray-600 hover:text-gray-900">API Keys</Link>
             </div>
