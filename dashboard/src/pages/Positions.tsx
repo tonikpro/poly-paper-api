@@ -134,7 +134,9 @@ export default function Positions() {
                           }
                         </td>
                         <td className="px-4 py-3 font-medium">{p.outcome}</td>
-                        <td className="px-4 py-3">{parseFloat(p.size).toFixed(2)}</td>
+                        <td className="px-4 py-3">
+                          {p.is_open ? parseFloat(p.size).toFixed(2) : <span className="text-gray-400">—</span>}
+                        </td>
                         <td className="px-4 py-3">{p.avg_price}</td>
                         <td className="px-4 py-3">
                           <StatusBadge isOpen={p.is_open} winner={p.winner} />
