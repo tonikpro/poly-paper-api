@@ -46,6 +46,9 @@ export const getPositions = () => api.get('/api/positions');
 export const getTrades = (params?: { limit?: number; offset?: number }) =>
   api.get('/api/trades', { params });
 
+export const cancelOrder = (orderID: string) =>
+  api.delete('/clob/order', { data: { orderID } });
+
 // Stats
 export const getStats = () => api.get('/api/stats');
 
