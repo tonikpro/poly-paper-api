@@ -66,14 +66,19 @@ func (q *DashboardQueries) Withdraw(ctx context.Context, userID, amount string) 
 
 func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status *string, limit, offset int) ([]map[string]any, int, error) {
 	countQuery := `SELECT COUNT(*) FROM orders WHERE user_id = $1`
-	dataQuery := `SELECT id, token_id, asset_id, outcome, side, price::text, original_size::text, size_matched::text, status, order_type, created_at
-		 FROM orders WHERE user_id = $1`
+	dataQuery := `SELECT o.id, o.token_id, o.asset_id, o.outcome, o.side,
+		             o.price::text, o.original_size::text, o.size_matched::text,
+		             o.status, o.order_type, o.created_at,
+		             COALESCE(m.question, '') AS question
+		      FROM orders o
+		      LEFT JOIN markets m ON o.market = m.id
+		      WHERE o.user_id = $1`
 	args := []any{userID}
 	argIdx := 2
 
 	if status != nil && *status != "" {
 		countQuery += fmt.Sprintf(" AND status = $%d", argIdx)
-		dataQuery += fmt.Sprintf(" AND status = $%d", argIdx)
+		dataQuery += fmt.Sprintf(" AND o.status = $%d", argIdx)
 		args = append(args, *status)
 		argIdx++
 	}
@@ -83,7 +88,7 @@ func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status 
 		return nil, 0, err
 	}
 
-	dataQuery += " ORDER BY created_at DESC"
+	dataQuery += " ORDER BY o.created_at DESC"
 	if limit > 0 {
 		dataQuery += fmt.Sprintf(" LIMIT %d", limit)
 	}
@@ -99,9 +104,10 @@ func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status 
 
 	var orders []map[string]any
 	for rows.Next() {
-		var id, tokenID, assetID, outcome, side, price, origSize, sizeMatched, st, orderType string
+		var id, tokenID, assetID, outcome, side, price, origSize, sizeMatched, st, orderType, question string
 		var createdAt any
-		if err := rows.Scan(&id, &tokenID, &assetID, &outcome, &side, &price, &origSize, &sizeMatched, &st, &orderType, &createdAt); err != nil {
+		if err := rows.Scan(&id, &tokenID, &assetID, &outcome, &side, &price,
+			&origSize, &sizeMatched, &st, &orderType, &createdAt, &question); err != nil {
 			return nil, 0, err
 		}
 		orders = append(orders, map[string]any{
@@ -109,6 +115,7 @@ func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status 
 			"side": side, "price": price,
 			"original_size": origSize, "size_matched": sizeMatched,
 			"status": st, "order_type": orderType, "created_at": createdAt,
+			"question": question,
 		})
 	}
 	if orders == nil {
