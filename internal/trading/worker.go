@@ -35,8 +35,6 @@ func (w *Worker) Start(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// tick fetches all LIVE orders, groups by token_id, fetches each book once,
-// and either fills or cancels orders.
 func (w *Worker) tick(ctx context.Context) {
 	orders, err := w.svc.repo.GetAllLiveOrders(ctx)
 	if err != nil {
@@ -47,17 +45,19 @@ func (w *Worker) tick(ctx context.Context) {
 		return
 	}
 
-	// Group orders by token_id
 	byToken := make(map[string][]*models.Order)
 	for _, o := range orders {
 		byToken[o.TokenID] = append(byToken[o.TokenID], o)
 	}
 
+	slog.Info("worker tick", "live_orders", len(orders), "tokens", len(byToken))
+
+	var fills, noMatch, errs int
+
 	for tokenID, tokenOrders := range byToken {
 		book, err := w.bookClient.FetchOrderBook(tokenID)
 		if err != nil {
 			if errors.Is(err, ErrOrderBookNotFound) {
-				// Market is closed — cancel all LIVE orders for this token
 				if cancelErr := w.svc.repo.CancelLiveOrdersByTokenID(ctx, tokenID); cancelErr != nil {
 					slog.Error("worker: cancel live orders on 404", "token_id", tokenID, "error", cancelErr)
 				}
@@ -82,12 +82,23 @@ func (w *Worker) tick(ctx context.Context) {
 
 			result := MatchOrder(book, order.Side, limitPrice, remaining)
 			if result == nil || result.FillSize < 0.000001 {
+				slog.Info("worker: no match", "order_id", order.ID, "side", order.Side,
+					"limit_price", limitPrice, "remaining", remaining)
+				noMatch++
 				continue
 			}
 
+			slog.Info("worker: filling", "order_id", order.ID, "side", order.Side,
+				"fill_size", result.FillSize, "fill_price", result.FillPrice)
+
 			if err := w.svc.executeFill(ctx, order, result); err != nil {
 				slog.Error("worker: execute fill", "order_id", order.ID, "error", err)
+				errs++
+			} else {
+				fills++
 			}
 		}
 	}
+
+	slog.Info("worker tick done", "fills", fills, "no_match", noMatch, "errors", errs)
 }
