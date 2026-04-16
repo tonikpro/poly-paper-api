@@ -10,5 +10,6 @@ All variables are loaded via `github.com/kelseyhightower/envconfig` in `internal
 | `POLYMARKET_CLOB_URL` | `https://clob.polymarket.com` | Live CLOB — used for proxy and orderbook matching |
 | `POLYMARKET_GAMMA_URL` | `https://gamma-api.polymarket.com` | Gamma API — used for token/market resolution and sync |
 | `ENCRYPTION_KEY` | `dev-encryption-key-32bytes!!!!!!` | AES-256 key for Ethereum private key storage — **must be exactly 32 bytes** |
+| `API_URL` | `http://api:8080` | Dashboard nginx proxy upstream — set to `http://api:<PORT>` if you change `PORT`; only used by the dashboard container |
 
 For local dev, defaults work out of the box once `make docker-up` is running.
