@@ -35,7 +35,11 @@
       "Bash(npm --prefix dashboard list react-router-dom)",
       "Bash(npm --prefix dashboard run build)",
       "Bash(npm --prefix dashboard run type-check)",
-      "Read(//Users/anotalij/Documents/projects/poly-paper-api/dashboard/src/pages/**)"
+      "Read(//Users/anotalij/Documents/projects/poly-paper-api/dashboard/src/pages/**)",
+      "Read(//Users/anatolij/.claude/plugins/cache/superpowers-dev/superpowers/5.0.7/skills/subagent-driven-development/**)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api log --oneline -10 -- docker-compose.yml)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api show fb95003 --stat)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api log 57128bd..HEAD --oneline)"
     ],
     "additionalDirectories": [
       "/Users/anatolij/Documents/projects/poly-paper-api/docs/superpowers/specs"
