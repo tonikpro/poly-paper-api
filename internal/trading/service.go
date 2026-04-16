@@ -308,7 +308,7 @@ func (s *Service) executeFill(ctx context.Context, order *models.Order, result *
 
 	fillSizeStr := fmt.Sprintf("%.6f", fillSize)
 	fillPriceStr := fmt.Sprintf("%.4f", fillPrice)
-	fillKey := fmt.Sprintf("%s-%.6f-%.4f", order.ID, fillSize, fillPrice)
+	fillKey := fmt.Sprintf("%s-%.6f", order.ID, newMatched)
 
 	trade := &models.Trade{
 		TakerOrderID: order.ID,

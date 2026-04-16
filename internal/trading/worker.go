@@ -28,7 +28,9 @@ func (w *Worker) Start(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.tick(ctx)
+			tickCtx, tickCancel := context.WithTimeout(ctx, 30*time.Second)
+			w.tick(tickCtx)
+			tickCancel()
 		}
 	}
 }
