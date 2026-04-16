@@ -30,10 +30,7 @@ services:
         condition: service_healthy
 
   dashboard:
-    build:
-      context: ./dashboard
-      args:
-        VITE_API_URL: ${DASHBOARD_API_URL:-http://localhost:8080}
+    build: ./dashboard
     ports:
       - "3000:80"
 
