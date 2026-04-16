@@ -34,7 +34,11 @@
       "Bash(git ls-tree *)",
       "Bash(npm --prefix dashboard list react-router-dom)",
       "Bash(npm --prefix dashboard run build)",
-      "Bash(npm --prefix dashboard run type-check)"
+      "Bash(npm --prefix dashboard run type-check)",
+      "Read(//Users/anotalij/Documents/projects/poly-paper-api/dashboard/src/pages/**)"
+    ],
+    "additionalDirectories": [
+      "/Users/anatolij/Documents/projects/poly-paper-api/docs/superpowers/specs"
     ]
   }
 }

@@ -24,6 +24,7 @@ Paper trading service replicating Polymarket's CLOB API for algo bot testing. Ha
 - **Polymarket CLOB API details** — read `docs/polymarket-clob-api.md` first, before external sources
 - **L2 auth path signing** — SDKs sign paths *without* `/clob` prefix; middleware strips it before verifying
 - **Update docs** — after changing `internal/`, `api/openapi/`, `Makefile`, or `docker-compose.yml`, update the relevant file in `docs/` in the same response
+- **git commit** - newer commit to git
 
 ## Key Entry Points
 
