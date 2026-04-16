@@ -9,6 +9,30 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poly"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://poly:poly@postgres:5432/poly?sslmode=disable}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-dev-encryption-key-32bytes!!!!!!}
+      POLYMARKET_CLOB_URL: ${POLYMARKET_CLOB_URL:-https://clob.polymarket.com}
+      POLYMARKET_GAMMA_URL: ${POLYMARKET_GAMMA_URL:-https://gamma-api.polymarket.com}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "3000:80"
 
 volumes:
   pgdata:
