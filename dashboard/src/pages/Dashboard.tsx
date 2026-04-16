@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getWallet, getOrders, getPositions, getTrades, getStats } from '../api/client';
+import { getWallet, getPositions, getTrades, getStats } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 
 interface Stats {
@@ -14,14 +14,12 @@ interface Stats {
 export default function Dashboard() {
   const { user } = useAuth();
   const [balance, setBalance] = useState('--');
-  const [orderCount, setOrderCount] = useState(0);
   const [positionCount, setPositionCount] = useState(0);
   const [tradeCount, setTradeCount] = useState(0);
   const [stats, setStats] = useState<Stats | null>(null);
 
   useEffect(() => {
     getWallet().then(r => setBalance(r.data.balance || '0')).catch(() => {});
-    getOrders({ limit: 1 }).then(r => setOrderCount(r.data.total || 0)).catch(() => {});
     getPositions().then(r => setPositionCount((r.data.positions || []).filter((p: any) => p.is_open).length)).catch(() => {});
     getTrades({ limit: 1 }).then(r => setTradeCount(r.data.total || 0)).catch(() => {});
     getStats().then(r => setStats(r.data)).catch(() => {});
@@ -35,9 +33,8 @@ export default function Dashboard() {
     <div>
       <h1 className="text-2xl font-bold mb-6">Dashboard</h1>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
         <Card title="Balance" value={`$${balance}`} />
-        <Card title="Open Orders" value={String(orderCount)} />
         <Card title="Open Positions" value={String(positionCount)} />
         <Card title="Total Trades" value={String(tradeCount)} />
       </div>

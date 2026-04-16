@@ -66,7 +66,7 @@ func (q *DashboardQueries) Withdraw(ctx context.Context, userID, amount string) 
 
 func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status *string, limit, offset int) ([]map[string]any, int, error) {
 	countQuery := `SELECT COUNT(*) FROM orders WHERE user_id = $1`
-	dataQuery := `SELECT id, token_id, side, price::text, original_size::text, size_matched::text, status, order_type, created_at
+	dataQuery := `SELECT id, token_id, asset_id, outcome, side, price::text, original_size::text, size_matched::text, status, order_type, created_at
 		 FROM orders WHERE user_id = $1`
 	args := []any{userID}
 	argIdx := 2
@@ -99,13 +99,14 @@ func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status 
 
 	var orders []map[string]any
 	for rows.Next() {
-		var id, tokenID, side, price, origSize, sizeMatched, st, orderType string
+		var id, tokenID, assetID, outcome, side, price, origSize, sizeMatched, st, orderType string
 		var createdAt any
-		if err := rows.Scan(&id, &tokenID, &side, &price, &origSize, &sizeMatched, &st, &orderType, &createdAt); err != nil {
+		if err := rows.Scan(&id, &tokenID, &assetID, &outcome, &side, &price, &origSize, &sizeMatched, &st, &orderType, &createdAt); err != nil {
 			return nil, 0, err
 		}
 		orders = append(orders, map[string]any{
-			"id": id, "token_id": tokenID, "side": side, "price": price,
+			"id": id, "token_id": tokenID, "asset_id": assetID, "outcome": outcome,
+			"side": side, "price": price,
 			"original_size": origSize, "size_matched": sizeMatched,
 			"status": st, "order_type": orderType, "created_at": createdAt,
 		})
