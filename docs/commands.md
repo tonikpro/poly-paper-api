@@ -3,8 +3,11 @@
 ## Local Development
 
 ```bash
-make docker-up       # Start PostgreSQL via docker-compose (required before server)
-make docker-down     # Stop PostgreSQL
+make docker-build     # Build all Docker images (api + dashboard)
+make docker-up        # Start PostgreSQL via docker-compose (local dev only)
+make docker-down      # Stop docker-compose services
+docker compose up -d  # Start full stack: postgres + api + dashboard
+docker compose down   # Stop full stack
 make run             # go run ./cmd/server — DB migrations run automatically on start
 make build           # Produces bin/poly-server
 ```

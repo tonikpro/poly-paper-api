@@ -1,4 +1,4 @@
-.PHONY: run build migrate docker-up docker-down generate dev-dashboard test test-sdk tidy
+.PHONY: run build migrate docker-up docker-down docker-build generate dev-dashboard test test-sdk tidy
 
 # Start the server
 run:
@@ -18,6 +18,10 @@ docker-up:
 # Stop PostgreSQL
 docker-down:
 	docker compose down
+
+# Build Docker images
+docker-build:
+	docker compose build
 
 # Generate code from OpenAPI specs
 generate:
