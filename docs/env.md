@@ -1,6 +1,6 @@
 # Environment Variables
 
-All variables are loaded via `github.com/kelseyhightower/envconfig` in `internal/config/config.go`.
+Go server variables are loaded via `github.com/kelseyhightower/envconfig` in `internal/config/config.go`. `API_URL` is consumed by the dashboard nginx container only (not by the Go server).
 
 | Variable | Default | Notes |
 |---|---|---|
