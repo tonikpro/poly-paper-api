@@ -39,7 +39,23 @@
       "Read(//Users/anatolij/.claude/plugins/cache/superpowers-dev/superpowers/5.0.7/skills/subagent-driven-development/**)",
       "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api log --oneline -10 -- docker-compose.yml)",
       "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api show fb95003 --stat)",
-      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api log 57128bd..HEAD --oneline)"
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api log 57128bd..HEAD --oneline)",
+      "Bash(git worktree *)",
+      "Bash(make generate *)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api/.worktrees/positions-improvements diff a9f2355..63e5f2e -- internal/auth/handler.go)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api/.worktrees/positions-improvements diff a9f2355..63e5f2e -- api/generated/dashboard/server.gen.go)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api/.worktrees/positions-improvements show 63e5f2e:internal/auth/handler.go)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api/.worktrees/positions-improvements show 63e5f2e:api/generated/dashboard/server.gen.go)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api/.worktrees/positions-improvements show a9f2355:api/generated/dashboard/server.gen.go)",
+      "Bash(oapi-codegen --version)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api/.worktrees/positions-improvements diff --stat)",
+      "Bash(docker compose *)",
+      "Bash(curl -s 'http://localhost:8080/api/positions?tab=open&limit=20&offset=0' -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3NzY0OTg0MjYsImlhdCI6MTc3NjQxMjAyNiwic3ViIjoiNmY4ZGQ4NjEtNjY4Yy00OGQzLWFhMjQtOTE1OWFkMTJhNzNkIn0.ISfbQZbOmTXm3K2SK0fNbRUC1fIkuDasE6nQ_g-gu6k')",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(git merge *)",
+      "Bash(git branch *)",
+      "Bash(git -C /Users/anatolij/Documents/projects/poly-paper-api/.worktrees/positions-improvements status --short)"
     ],
     "additionalDirectories": [
       "/Users/anatolij/Documents/projects/poly-paper-api/docs/superpowers/specs"
