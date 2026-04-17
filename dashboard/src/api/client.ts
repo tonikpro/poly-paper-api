@@ -41,7 +41,8 @@ export const withdraw = (amount: string) => api.post('/api/wallet/withdraw', { a
 export const getOrders = (params?: { status?: string; limit?: number; offset?: number }) =>
   api.get('/api/orders', { params });
 
-export const getPositions = () => api.get('/api/positions');
+export const getPositions = (params?: { tab?: 'open' | 'closed'; limit?: number; offset?: number }) =>
+  api.get('/api/positions', { params });
 
 export const getTrades = (params?: { limit?: number; offset?: number; asset_id?: string }) =>
   api.get('/api/trades', { params });
