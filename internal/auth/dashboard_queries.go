@@ -124,42 +124,65 @@ func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status 
 	return orders, total, nil
 }
 
-func (q *DashboardQueries) GetPositions(ctx context.Context, userID string) ([]map[string]any, error) {
-	// Show all positions: open (size > 0) and settled (realized_pnl != 0).
-	// Join outcome_tokens for winner status and markets for the question text.
+func (q *DashboardQueries) GetPositions(ctx context.Context, userID string, isOpen bool, limit, offset int) ([]map[string]any, int, error) {
+	const baseWhere = `
+		FROM positions p
+		LEFT JOIN outcome_tokens ot ON p.token_id = ot.token_id
+		LEFT JOIN markets m ON p.market_id = m.id
+		WHERE p.user_id = $1
+		  AND (p.size > 0 OR ABS(p.realized_pnl) > 0.000001)
+		  AND (ot.winner IS NULL) = $2`
+
+	var total int
+	if err := q.pool.QueryRow(ctx,
+		`SELECT COUNT(*)`+baseWhere,
+		userID, isOpen,
+	).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	rows, err := q.pool.Query(ctx,
 		`SELECT p.id, p.token_id, p.outcome, p.size::text, p.avg_price::text, p.realized_pnl::text,
-		        ot.winner, COALESCE(m.question, '') AS question,
-		        ot.winner IS NULL AS is_open
-		 FROM positions p
-		 LEFT JOIN outcome_tokens ot ON p.token_id = ot.token_id
-		 LEFT JOIN markets m ON p.market_id = m.id
-		 WHERE p.user_id = $1
-		   AND (p.size > 0 OR ABS(p.realized_pnl) > 0.000001)
-		 ORDER BY p.updated_at DESC`, userID)
+		        p.created_at,
+		        ot.winner,
+		        COALESCE(m.question, '') AS question,
+		        ot.winner IS NULL AS is_open,
+		        COALESCE((
+		            SELECT SUM(CASE WHEN t.side = 'BUY' THEN t.size::numeric ELSE -t.size::numeric END)
+		            FROM trades t
+		            WHERE t.user_id = p.user_id AND t.asset_id = p.token_id
+		        ), 0)::text AS net_size`+
+			baseWhere+`
+		ORDER BY p.created_at DESC
+		LIMIT $3 OFFSET $4`,
+		userID, isOpen, limit, offset,
+	)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
 	var positions []map[string]any
 	for rows.Next() {
-		var id, tokenID, outcome, size, avgPrice, rpnl, question string
+		var id, tokenID, outcome, size, avgPrice, rpnl, question, netSize string
+		var createdAt any
 		var winner *bool
-		var isOpen bool
-		if err := rows.Scan(&id, &tokenID, &outcome, &size, &avgPrice, &rpnl, &winner, &question, &isOpen); err != nil {
-			return nil, err
+		var isOpenRow bool
+		if err := rows.Scan(&id, &tokenID, &outcome, &size, &avgPrice, &rpnl,
+			&createdAt, &winner, &question, &isOpenRow, &netSize); err != nil {
+			return nil, 0, err
 		}
 		positions = append(positions, map[string]any{
 			"id": id, "token_id": tokenID, "outcome": outcome,
 			"size": size, "avg_price": avgPrice, "realized_pnl": rpnl,
-			"winner": winner, "question": question, "is_open": isOpen,
+			"created_at": createdAt, "winner": winner, "question": question,
+			"is_open": isOpenRow, "net_size": netSize,
 		})
 	}
 	if positions == nil {
 		positions = []map[string]any{}
 	}
-	return positions, nil
+	return positions, total, nil
 }
 
 func (q *DashboardQueries) GetTrades(ctx context.Context, userID string, limit, offset int) ([]map[string]any, int, error) {
