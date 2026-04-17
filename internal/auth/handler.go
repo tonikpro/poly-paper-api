@@ -156,12 +156,32 @@ func (h *DashboardHandler) GetDashboardOrders(w http.ResponseWriter, r *http.Req
 
 func (h *DashboardHandler) GetDashboardPositions(w http.ResponseWriter, r *http.Request, params dashboard.GetDashboardPositionsParams) {
 	userID := GetUserID(r.Context())
-	positions, err := h.queries.GetPositions(r.Context(), userID)
+
+	isOpen := true
+	if params.Tab != nil && *params.Tab == dashboard.Closed {
+		isOpen = false
+	}
+
+	limit := 20
+	if params.Limit != nil && *params.Limit > 0 && *params.Limit <= 100 {
+		limit = *params.Limit
+	}
+	offset := 0
+	if params.Offset != nil && *params.Offset > 0 {
+		offset = *params.Offset
+	}
+
+	positions, total, err := h.queries.GetPositions(r.Context(), userID, isOpen, limit, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to get positions"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"positions": positions})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"positions": positions,
+		"total":     total,
+		"limit":     limit,
+		"offset":    offset,
+	})
 }
 
 func (h *DashboardHandler) GetStats(w http.ResponseWriter, r *http.Request) {
