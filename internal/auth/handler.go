@@ -154,7 +154,7 @@ func (h *DashboardHandler) GetDashboardOrders(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{"orders": orders, "total": total})
 }
 
-func (h *DashboardHandler) GetDashboardPositions(w http.ResponseWriter, r *http.Request) {
+func (h *DashboardHandler) GetDashboardPositions(w http.ResponseWriter, r *http.Request, params dashboard.GetDashboardPositionsParams) {
 	userID := GetUserID(r.Context())
 	positions, err := h.queries.GetPositions(r.Context(), userID)
 	if err != nil {
