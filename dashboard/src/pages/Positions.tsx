@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { getPositions, getTrades } from '../api/client';
 
 interface Position {
@@ -11,6 +11,8 @@ interface Position {
   winner: boolean | null;
   question: string;
   is_open: boolean;
+  created_at: string;
+  net_size: string;
 }
 
 interface Trade {
@@ -26,10 +28,9 @@ interface Trade {
   profit_loss: number | null;
 }
 
-const PAGE_SIZE = 20;
+const LIMIT = 20;
 
-function StatusBadge({ isOpen, winner }: { isOpen: boolean; winner: boolean | null }) {
-  if (isOpen) return <span className="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full font-medium">Open</span>;
+function ResultBadge({ winner }: { winner: boolean | null }) {
   if (winner === null) return <span className="bg-gray-100 text-gray-500 text-xs px-2 py-0.5 rounded-full">Settled</span>;
   return winner
     ? <span className="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-medium">Won</span>
@@ -44,32 +45,51 @@ function TradeResultBadge({ side, winner }: { side: string; winner: boolean | nu
     : <span className="bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-medium">Loss</span>;
 }
 
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export default function Positions() {
+  const [activeTab, setActiveTab] = useState<'open' | 'closed'>('open');
   const [positions, setPositions] = useState<Position[]>([]);
-  const [tradesByToken, setTradesByToken] = useState<Map<string, Trade[]>>(new Map());
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [tradesByToken, setTradesByToken] = useState<Map<string, Trade[]>>(new Map());
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  // Load trades once for the expand sub-table
   useEffect(() => {
-    Promise.all([
-      getPositions(),
-      getTrades({ limit: 1000 }),
-    ])
-      .then(([posRes, tradeRes]) => {
-        setPositions(posRes.data.positions || []);
-
+    getTrades({ limit: 1000 })
+      .then(res => {
         const map = new Map<string, Trade[]>();
-        for (const t of (tradeRes.data.trades || []) as Trade[]) {
+        for (const t of (res.data.trades || []) as Trade[]) {
           const list = map.get(t.asset_id) || [];
           list.push(t);
           map.set(t.asset_id, list);
         }
         setTradesByToken(map);
       })
+      .catch(() => {});
+  }, []);
+
+  // Load positions when tab or page changes
+  useEffect(() => {
+    setLoading(true);
+    setExpanded(new Set());
+    getPositions({ tab: activeTab, limit: LIMIT, offset: (page - 1) * LIMIT })
+      .then(res => {
+        setPositions(res.data.positions || []);
+        setTotal(res.data.total || 0);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [activeTab, page]);
+
+  const switchTab = (tab: 'open' | 'closed') => {
+    setActiveTab(tab);
+    setPage(1);
+  };
 
   const toggleExpand = (id: string) => {
     setExpanded(prev => {
@@ -79,44 +99,79 @@ export default function Positions() {
     });
   };
 
-  if (loading) return <div className="text-center py-8">Loading...</div>;
-
-  const totalPages = Math.ceil(positions.length / PAGE_SIZE);
-  const paginated = positions.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const totalPages = Math.ceil(total / LIMIT);
 
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Positions</h1>
 
-      {positions.length === 0 ? (
-        <div className="bg-white rounded-lg shadow p-8 text-center text-gray-500">
-          No positions yet.
+      <div className="bg-white rounded-lg shadow overflow-hidden">
+        {/* Tab bar */}
+        <div className="flex border-b border-gray-200 px-0">
+          <button
+            onClick={() => switchTab('open')}
+            className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'open'
+                ? 'border-indigo-500 text-indigo-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Open
+          </button>
+          <button
+            onClick={() => switchTab('closed')}
+            className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'closed'
+                ? 'border-indigo-500 text-indigo-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            Closed
+          </button>
         </div>
-      ) : (
-        <>
-          <div className="bg-white rounded-lg shadow overflow-x-auto">
+
+        {loading ? (
+          <div className="text-center py-8 text-gray-500">Loading...</div>
+        ) : positions.length === 0 ? (
+          <div className="p-8 text-center text-gray-500">
+            No {activeTab} positions.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 w-6"></th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Market</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Outcome</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Size</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Avg Price</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Realized P&L</th>
-                </tr>
+                {activeTab === 'open' ? (
+                  <tr>
+                    <th className="px-4 py-3 w-6"></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Market</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Outcome</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Size</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Avg Price</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Realized P&L</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-indigo-600 uppercase">Opened ↓</th>
+                  </tr>
+                ) : (
+                  <tr>
+                    <th className="px-4 py-3 w-6"></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Market</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Outcome</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Net Size</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Avg Price</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Result</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Realized P&L</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-indigo-600 uppercase">Opened ↓</th>
+                  </tr>
+                )}
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {paginated.map(p => {
+                {positions.map(p => {
                   const pnl = parseFloat(p.realized_pnl);
                   const trades = tradesByToken.get(p.token_id) || [];
                   const isExpanded = expanded.has(p.id);
 
                   return (
-                    <>
+                    <Fragment key={p.id}>
                       <tr
-                        key={p.id}
                         className="hover:bg-gray-50 cursor-pointer select-none"
                         onClick={() => toggleExpand(p.id)}
                       >
@@ -134,19 +189,34 @@ export default function Positions() {
                           }
                         </td>
                         <td className="px-4 py-3 font-medium">{p.outcome}</td>
-                        <td className="px-4 py-3">{parseFloat(p.size) > 0 ? parseFloat(p.size).toFixed(2) : '—'}</td>
-                        <td className="px-4 py-3">{p.avg_price}</td>
-                        <td className="px-4 py-3">
-                          <StatusBadge isOpen={p.is_open} winner={p.winner} />
-                        </td>
-                        <td className={`px-4 py-3 font-medium ${pnl > 0 ? 'text-green-600' : pnl < 0 ? 'text-red-600' : 'text-gray-400'}`}>
-                          {pnl !== 0 ? `${pnl > 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
+
+                        {activeTab === 'open' ? (
+                          <>
+                            <td className="px-4 py-3">{parseFloat(p.size) > 0 ? parseFloat(p.size).toFixed(2) : '—'}</td>
+                            <td className="px-4 py-3">{p.avg_price}</td>
+                            <td className={`px-4 py-3 font-medium ${pnl > 0 ? 'text-green-600' : pnl < 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                              {pnl !== 0 ? `${pnl > 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="px-4 py-3">{parseFloat(p.net_size).toFixed(2)}</td>
+                            <td className="px-4 py-3">{p.avg_price}</td>
+                            <td className="px-4 py-3"><ResultBadge winner={p.winner} /></td>
+                            <td className={`px-4 py-3 font-medium ${pnl > 0 ? 'text-green-600' : pnl < 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                              {pnl !== 0 ? `${pnl > 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
+                            </td>
+                          </>
+                        )}
+
+                        <td className="px-4 py-3 text-gray-500 text-sm">
+                          {p.created_at ? formatDate(p.created_at) : '—'}
                         </td>
                       </tr>
 
                       {isExpanded && trades.length > 0 && (
-                        <tr key={`${p.id}-trades`}>
-                          <td colSpan={7} className="px-0 py-0 bg-gray-50">
+                        <tr>
+                          <td colSpan={activeTab === 'open' ? 7 : 8} className="px-0 py-0 bg-gray-50">
                             <div className="px-8 py-3">
                               <table className="min-w-full text-xs">
                                 <thead>
@@ -189,36 +259,37 @@ export default function Positions() {
                           </td>
                         </tr>
                       )}
-                    </>
+                    </Fragment>
                   );
                 })}
               </tbody>
             </table>
           </div>
+        )}
 
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4 text-sm text-gray-600">
-              <span>{positions.length} positions · page {page} of {totalPages}</span>
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => setPage(p => p - 1)}
-                  disabled={page === 1}
-                  className="px-3 py-1 rounded border disabled:opacity-40 hover:bg-gray-50"
-                >
-                  Prev
-                </button>
-                <button
-                  onClick={() => setPage(p => p + 1)}
-                  disabled={page >= totalPages}
-                  className="px-3 py-1 rounded border disabled:opacity-40 hover:bg-gray-50"
-                >
-                  Next
-                </button>
-              </div>
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 text-sm text-gray-600">
+            <span>{total} positions · page {page} of {totalPages}</span>
+            <div className="flex space-x-2">
+              <button
+                onClick={() => setPage(p => p - 1)}
+                disabled={page === 1}
+                className="px-3 py-1 rounded border disabled:opacity-40 hover:bg-gray-50"
+              >
+                Prev
+              </button>
+              <button
+                onClick={() => setPage(p => p + 1)}
+                disabled={page >= totalPages}
+                className="px-3 py-1 rounded border disabled:opacity-40 hover:bg-gray-50"
+              >
+                Next
+              </button>
             </div>
-          )}
-        </>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
