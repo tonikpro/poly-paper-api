@@ -118,6 +118,9 @@ func (q *DashboardQueries) GetOrders(ctx context.Context, userID string, status 
 			"question": question,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
 	if orders == nil {
 		orders = []map[string]any{}
 	}
@@ -179,6 +182,9 @@ func (q *DashboardQueries) GetPositions(ctx context.Context, userID string, isOp
 			"is_open": isOpenRow, "net_size": netSize,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
 	if positions == nil {
 		positions = []map[string]any{}
 	}
@@ -233,6 +239,9 @@ func (q *DashboardQueries) GetTrades(ctx context.Context, userID string, limit, 
 			"size": size, "status": status, "match_time": matchTime,
 			"outcome": outcome, "winner": winner, "profit_loss": profitLoss,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
 	}
 	if trades == nil {
 		trades = []map[string]any{}
