@@ -167,7 +167,7 @@ func (h *DashboardHandler) GetDashboardPositions(w http.ResponseWriter, r *http.
 		limit = *params.Limit
 	}
 	offset := 0
-	if params.Offset != nil && *params.Offset > 0 {
+	if params.Offset != nil && *params.Offset >= 0 {
 		offset = *params.Offset
 	}
 
