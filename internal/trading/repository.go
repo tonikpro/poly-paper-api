@@ -342,15 +342,16 @@ func (r *Repository) GetTradesByUserID(ctx context.Context, userID string, marke
 
 // --- Positions ---
 
-func (r *Repository) UpsertPosition(ctx context.Context, tx pgx.Tx, userID, tokenID, marketID, outcome, size, avgPrice string) error {
+func (r *Repository) UpsertPosition(ctx context.Context, tx pgx.Tx, userID, tokenID, marketID, outcome, size, avgPrice, realizedPnlDelta string) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO positions (user_id, token_id, market_id, outcome, size, avg_price)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO positions (user_id, token_id, market_id, outcome, size, avg_price, realized_pnl)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7::numeric)
 		 ON CONFLICT (user_id, token_id) DO UPDATE SET
 			size = EXCLUDED.size,
 			avg_price = EXCLUDED.avg_price,
+			realized_pnl = positions.realized_pnl + $7::numeric,
 			updated_at = now()`,
-		userID, tokenID, marketID, outcome, size, avgPrice)
+		userID, tokenID, marketID, outcome, size, avgPrice, realizedPnlDelta)
 	return err
 }
 

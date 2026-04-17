@@ -154,10 +154,10 @@ func (r *Resolver) SettleMarket(ctx context.Context, marketID string) error {
 			return fmt.Errorf("zero conditional wallet: %w", err)
 		}
 
-		// Record PnL (keep size intact for historical display)
+		// Zero size and record PnL on settlement
 		rpnlStr := fmt.Sprintf("%.6f", pos.realizedPnl+realizedPnl)
 		_, err = tx.Exec(ctx,
-			`UPDATE positions SET realized_pnl = $3, updated_at = now()
+			`UPDATE positions SET size = 0, realized_pnl = $3, updated_at = now()
 			 WHERE id = $1 AND user_id = $2`,
 			pos.id, pos.userID, rpnlStr)
 		if err != nil {

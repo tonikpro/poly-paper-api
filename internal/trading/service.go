@@ -255,16 +255,18 @@ func (s *Service) updatePosition(ctx context.Context, tx pgx.Tx, userID, tokenID
 			newAvg = fillPrice
 		}
 		return s.repo.UpsertPosition(ctx, tx, userID, tokenID, market, outcome,
-			fmt.Sprintf("%.6f", newSize), fmt.Sprintf("%.4f", newAvg))
+			fmt.Sprintf("%.6f", newSize), fmt.Sprintf("%.4f", newAvg), "0")
 	}
 	if pos != nil {
 		existingSize, _ := strconv.ParseFloat(pos.Size, 64)
+		existingAvg, _ := strconv.ParseFloat(pos.AvgPrice, 64)
 		newSize := existingSize - fillSize
 		if newSize < 0.000001 {
 			newSize = 0
 		}
+		pnlDelta := fillSize * (fillPrice - existingAvg)
 		return s.repo.UpsertPosition(ctx, tx, userID, tokenID, market, outcome,
-			fmt.Sprintf("%.6f", newSize), pos.AvgPrice)
+			fmt.Sprintf("%.6f", newSize), pos.AvgPrice, fmt.Sprintf("%.6f", pnlDelta))
 	}
 	return nil
 }
